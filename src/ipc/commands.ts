@@ -47,3 +47,11 @@ export const clearLogs = () => invoke<void>("clear_logs");
 /** Joins and copies in Rust; log text never round-trips through JS. */
 export const copyLogs = () => invoke<void>("copy_logs");
 export const relaunchElevated = () => invoke<void>("relaunch_elevated");
+
+export interface UpdateInfo {
+  available: boolean;
+  version: string | null;
+  notes: string | null;
+}
+export const checkForUpdate = () => invoke<UpdateInfo>("check_for_update");
+export const installUpdate = () => invoke<void>("install_update");

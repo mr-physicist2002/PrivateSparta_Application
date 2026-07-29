@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
+import { RefreshCw } from "lucide-react";
 import { useAppStore } from "../state/store";
 import { LANGUAGES, useT } from "../i18n";
+import { checkForUpdate, installUpdate } from "../ipc/commands";
 import type { Settings } from "../ipc/types";
 
 function Toggle(props: {
@@ -38,6 +40,53 @@ function Toggle(props: {
         />
       </button>
     </label>
+  );
+}
+
+/** Update checks are user-initiated only — nothing polls in the background. */
+function UpdateRow() {
+  const t = useT();
+  const toast = useAppStore((s) => s.toast);
+  const [busy, setBusy] = useState(false);
+  const [found, setFound] = useState<string | null>(null);
+
+  const check = async () => {
+    setBusy(true);
+    try {
+      const info = await checkForUpdate();
+      if (info.available && info.version) {
+        setFound(info.version);
+      } else {
+        setFound(null);
+        toast("info", t("upToDate"));
+      }
+    } catch (e) {
+      toast("error", typeof e === "string" ? e : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex items-center justify-between gap-4 py-2">
+      <div className="min-w-0">
+        {found ? (
+          <div className="text-sm text-accent">
+            {t("updateAvailable").replace("{n}", found)}
+          </div>
+        ) : (
+          <div className="text-sm">{t("checkForUpdates")}</div>
+        )}
+      </div>
+      <button
+        onClick={() => (found ? void installUpdate() : void check())}
+        disabled={busy}
+        className="flex shrink-0 items-center gap-1.5 rounded-input border border-border-strong px-3 py-1 text-xs transition-colors duration-[140ms] hover:border-accent hover:text-accent disabled:opacity-40"
+      >
+        {busy ? <RefreshCw size={12} className="animate-spin" /> : null}
+        {busy ? t("checking") : found ? t("installUpdate") : t("checkForUpdates")}
+      </button>
+    </div>
   );
 }
 
@@ -189,11 +238,18 @@ export function SettingsScreen() {
           <span className="tabular font-mono text-xs text-text-muted">v{version}</span>
         </div>
         <div className="flex items-center justify-between py-2">
+          <span className="text-sm">{t("author")}</span>
+          <span className="select-text text-xs text-text-secondary" dir="ltr">
+            H. Talebi · github.com/mr-physicist2002
+          </span>
+        </div>
+        <div className="flex items-center justify-between py-2">
           <span className="text-sm">{t("support")}</span>
           <span className="select-text font-mono text-xs text-text-secondary" dir="ltr">
             @PrivateSpartaBot
           </span>
         </div>
+        <UpdateRow />
       </Section>
     </main>
   );

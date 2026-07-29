@@ -1,0 +1,125 @@
+name: Release
+
+# Tag a version to publish signed installers for all three platforms:
+#   git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            core: windows-amd64
+            core_bin: sing-box.exe
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            core: darwin-arm64
+            core_bin: sing-box
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            core: darwin-amd64
+            core_bin: sing-box
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            core: linux-amd64
+            core_bin: sing-box
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Fetch and verify sing-box core
+        shell: bash
+        env:
+          CORE_VERSION: ${{ vars.SING_BOX_VERSION || '1.13.15' }}
+        run: |
+          set -euo pipefail
+          name="sing-box-${CORE_VERSION}-${{ matrix.core }}"
+          mkdir -p src-tauri/binaries
+          if [ "${{ matrix.core }}" = "windows-amd64" ]; then
+            curl -fsSL -o core.zip \
+              "https://github.com/SagerNet/sing-box/releases/download/v${CORE_VERSION}/${name}.zip"
+            unzip -q core.zip
+          else
+            curl -fsSL -o core.tar.gz \
+              "https://github.com/SagerNet/sing-box/releases/download/v${CORE_VERSION}/${name}.tar.gz"
+            tar -xzf core.tar.gz
+          fi
+          cp "${name}/${{ matrix.core_bin }}" \
+            "src-tauri/binaries/sing-box-${{ matrix.target }}$([ "${{ matrix.core }}" = "windows-amd64" ] && echo .exe || echo)"
+          chmod +x src-tauri/binaries/* || true
+          # Record the hash that actually shipped in this build.
+          shasum -a 256 src-tauri/binaries/* || sha256sum src-tauri/binaries/*
+
+      - name: Fetch routing rule-sets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p src-tauri/resources/rulesets
+          base_ir="https://raw.githubusercontent.com/Chocolate4U/Iran-sing-box-rules/rule-set"
+          base_sb="https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set"
+          curl -fsSL -o src-tauri/resources/rulesets/geosite-ir.srs "$base_ir/geosite-ir.srs"
+          curl -fsSL -o src-tauri/resources/rulesets/geoip-ir.srs "$base_ir/geoip-ir.srs"
+          curl -fsSL -o src-tauri/resources/rulesets/geosite-category-ads-all.srs \
+            "$base_sb/geosite-category-ads-all.srs"
+
+      - name: Fetch wintun
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o wintun.zip https://www.wintun.net/builds/wintun-0.14.1.zip
+          unzip -q wintun.zip
+          cp wintun/bin/amd64/wintun.dll src-tauri/resources/wintun.dll
+
+      - run: npm ci
+
+      - name: Check frontend types
+        run: npx tsc --noEmit
+
+      - name: Rust lint and tests
+        working-directory: src-tauri
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          args: --target ${{ matrix.target }}
+          tagName: ${{ github.ref_name }}
+          releaseName: PrivateSparta ${{ github.ref_name }}
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true

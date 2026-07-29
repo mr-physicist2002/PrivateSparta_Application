@@ -5,6 +5,8 @@ mod core;
 mod elevation;
 mod error;
 mod latency;
+#[cfg(test)]
+mod live_test;
 mod logs;
 mod model;
 mod parser;
@@ -13,6 +15,7 @@ mod store;
 mod subs;
 mod sysproxy;
 mod tray;
+mod updater;
 mod uri_export;
 
 use std::sync::Mutex;
@@ -42,6 +45,7 @@ pub fn run() {
             MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
@@ -179,6 +183,8 @@ pub fn run() {
             commands::clear_logs,
             commands::copy_logs,
             commands::relaunch_elevated,
+            commands::check_for_update,
+            commands::install_update,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build the app");

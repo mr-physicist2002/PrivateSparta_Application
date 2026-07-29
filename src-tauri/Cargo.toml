@@ -2,6 +2,9 @@
 name = "privatesparta"
 version = "0.1.0"
 description = "Lightweight desktop client for the PrivateSparta VPN service"
+authors = ["H. Talebi <https://github.com/mr-physicist2002>"]
+license = "MIT"
+repository = "https://github.com/mr-physicist2002"
 edition = "2021"
 rust-version = "1.82"
 
@@ -17,6 +20,7 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-autostart = "2"
+tauri-plugin-updater = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "gzip", "native-tls"] }
 serde_yaml = "0.9"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }

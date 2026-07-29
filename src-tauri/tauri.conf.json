@@ -30,6 +30,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
     "externalBin": ["binaries/sing-box"],
     "resources": {
       "resources/wintun.dll": "./wintun.dll",
@@ -41,10 +42,24 @@
       "icons/128x128@2x.png",
       "icons/icon.ico"
     ],
+    "publisher": "H. Talebi",
+    "copyright": "© H. Talebi",
+    "shortDescription": "PrivateSparta VPN client",
+    "longDescription": "A fast, private desktop client for the PrivateSparta VPN service.",
     "windows": {
       "nsis": {
         "installMode": "currentUser"
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "dialog": false,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFBQzAzMzQ1M0MwMjkzNzAKUldSd2t3SThSVFBBR3I1V0hUNkZocWZtQ0VtaTJCMHdnRm55bnZ1WW8yQWdRbzFuSk00by93cFEK",
+      "endpoints": [
+        "https://github.com/mr-physicist2002/privatesparta/releases/latest/download/latest.json"
+      ]
     }
   }
 }

@@ -92,6 +92,12 @@ export const en = {
   rulesetAutoUpdateHint: "Downloads updated rule files daily (off = no background requests)",
   coreLogLevel: "Core log level",
   support: "Support",
+  author: "Author",
+  checkForUpdates: "Check for updates",
+  checking: "Checking…",
+  upToDate: "You're on the latest version.",
+  updateAvailable: "Version {n} is available.",
+  installUpdate: "Install and restart",
   // logs
   levelAll: "All levels",
   logsEmpty: "Logs appear here when the tunnel is running.",

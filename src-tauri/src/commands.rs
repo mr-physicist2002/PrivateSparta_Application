@@ -416,6 +416,20 @@ pub fn relaunch_elevated(app: AppHandle) -> Result<(), AppError> {
     }
 }
 
+// ---------- updates ----------
+
+#[tauri::command]
+pub async fn check_for_update(
+    app: AppHandle,
+) -> Result<crate::updater::UpdateInfo, AppError> {
+    crate::updater::check(&app).await
+}
+
+#[tauri::command]
+pub async fn install_update(app: AppHandle) -> Result<(), AppError> {
+    crate::updater::install(&app).await
+}
+
 // ---------- connection ----------
 
 #[tauri::command]

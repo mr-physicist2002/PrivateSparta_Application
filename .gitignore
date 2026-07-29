@@ -2,6 +2,10 @@ node_modules/
 dist/
 src-tauri/target/
 src-tauri/gen/schemas/
+# Updater signing key — never commit. Lives in ~/.privatesparta/
+*.key
+*.key.pub
+updater-key-password.txt
 # Bundled core: downloaded, not versioned. Version + SHA-256 pinned in README.
 src-tauri/binaries/
 .claude/settings.local.json
