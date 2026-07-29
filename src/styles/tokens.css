@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./fonts.css";
 
 /*
  * PrivateSparta design tokens — matte black / aged bronze.
@@ -66,11 +67,46 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Shield animations. The draw runs once on entering `connecting`; the pulse
+   loops while connecting; the bloom's opacity is driven inline by traffic. */
+@keyframes shield-draw {
+  from {
+    stroke-dashoffset: var(--shield-path-length, 400);
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes shield-pulse {
+  0%,
+  100% {
+    opacity: 0.1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+.shield-draw {
+  stroke-dasharray: var(--shield-path-length, 400);
+  animation: shield-draw 600ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.shield-pulse {
+  animation: shield-pulse 2.4s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     transition-duration: 0s !important;
     animation-duration: 0s !important;
+  }
+  .shield-draw {
+    stroke-dasharray: none;
+    animation: none;
+  }
+  .shield-pulse {
+    animation: none;
+    opacity: 0.2;
   }
 }

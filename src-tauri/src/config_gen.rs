@@ -1,7 +1,8 @@
 use serde_json::{json, Map, Value};
 
 use crate::error::AppError;
-use crate::model::{Node, ProtocolParams, TlsConfig, Transport};
+use crate::model::{Node, ProtocolParams, ProxyMode, TlsConfig, Transport};
+use crate::rules::RulePaths;
 
 pub struct GenInput<'a> {
     /// Every known node becomes a tagged outbound so the clash API can
@@ -15,6 +16,14 @@ pub struct GenInput<'a> {
     pub clash_port: u16,
     pub clash_secret: &'a str,
     pub log_level: &'a str,
+    /// Tun adds the TUN inbound with auto_route + strict_route.
+    pub mode: ProxyMode,
+    /// Split-routing rule-sets; None = route everything through the proxy.
+    pub rules: Option<&'a RulePaths>,
+    pub ad_block: bool,
+    /// true = DoH-through-tunnel + split DNS (+ FakeIP in TUN);
+    /// false = minimal local resolver (ephemeral test instances).
+    pub full_dns: bool,
 }
 
 /// Build a complete sing-box config. Generated fresh on every connect; never
@@ -52,6 +61,18 @@ pub fn generate(input: &GenInput<'_>) -> Result<Value, AppError> {
             "listen_port": port
         }));
     }
+    if input.mode == ProxyMode::Tun {
+        inbounds.push(json!({
+            "type": "tun",
+            "tag": "tun-in",
+            "interface_name": "PrivateSparta",
+            "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
+            "mtu": 9000,
+            "auto_route": true,
+            "strict_route": true,
+            "stack": "system"
+        }));
+    }
 
     let mut root = Map::new();
     root.insert(
@@ -67,16 +88,93 @@ pub fn generate(input: &GenInput<'_>) -> Result<Value, AppError> {
             }
         }),
     );
+    root.insert("dns".into(), dns_value(input));
     root.insert("inbounds".into(), Value::Array(inbounds));
     root.insert("outbounds".into(), Value::Array(outbounds));
     if !endpoints.is_empty() {
         root.insert("endpoints".into(), Value::Array(endpoints));
     }
-    root.insert(
-        "route".into(),
-        json!({ "final": input.selected_tag, "auto_detect_interface": true }),
-    );
+    root.insert("route".into(), route_value(input));
     Ok(Value::Object(root))
+}
+
+/// DNS per the brief: direct queries via the local resolver, proxied queries
+/// via DoH through the tunnel, FakeIP in TUN mode, no leaks (hijack + final
+/// through the remote server).
+fn dns_value(input: &GenInput<'_>) -> Value {
+    let mut servers = vec![json!({ "type": "local", "tag": "dns-direct" })];
+    if !input.full_dns {
+        return json!({ "servers": servers, "final": "dns-direct" });
+    }
+    servers.push(json!({
+        "type": "https",
+        "tag": "dns-remote",
+        "server": "1.1.1.1",
+        "detour": input.selected_tag
+    }));
+    let mut rules = Vec::new();
+    if input.rules.is_some() {
+        // Iranian domains resolve via the local resolver so they route direct.
+        rules.push(json!({ "rule_set": ["geosite-ir"], "server": "dns-direct" }));
+    }
+    let fakeip = input.mode == ProxyMode::Tun;
+    if fakeip {
+        servers.push(json!({
+            "type": "fakeip",
+            "tag": "dns-fakeip",
+            "inet4_range": "198.18.0.0/15",
+            "inet6_range": "fc00::/18"
+        }));
+        rules.push(json!({ "query_type": ["A", "AAAA"], "server": "dns-fakeip" }));
+    }
+    let mut dns = Map::new();
+    dns.insert("servers".into(), json!(servers));
+    if !rules.is_empty() {
+        dns.insert("rules".into(), json!(rules));
+    }
+    dns.insert("final".into(), json!("dns-remote"));
+    if fakeip {
+        dns.insert("independent_cache".into(), json!(true));
+    }
+    Value::Object(dns)
+}
+
+fn route_value(input: &GenInput<'_>) -> Value {
+    let mut rules = vec![json!({ "action": "sniff" })];
+    if input.full_dns {
+        rules.push(json!({ "protocol": "dns", "action": "hijack-dns" }));
+    }
+    let mut rule_sets = Vec::new();
+    if let Some(paths) = input.rules {
+        // LAN, loopback, and private ranges never enter the tunnel.
+        rules.push(json!({ "ip_is_private": true, "outbound": "direct" }));
+        rules.push(json!({ "rule_set": ["geosite-ir", "geoip-ir"], "outbound": "direct" }));
+        if input.ad_block {
+            rules.push(json!({ "rule_set": ["geosite-category-ads-all"], "action": "reject" }));
+        }
+        let local = |tag: &str, path: &std::path::Path| {
+            json!({
+                "type": "local",
+                "tag": tag,
+                "format": "binary",
+                "path": path.to_string_lossy()
+            })
+        };
+        rule_sets.push(local("geosite-ir", &paths.geosite_ir));
+        rule_sets.push(local("geoip-ir", &paths.geoip_ir));
+        if input.ad_block {
+            rule_sets.push(local("geosite-category-ads-all", &paths.ads));
+        }
+    }
+    let mut route = Map::new();
+    route.insert("rules".into(), json!(rules));
+    if !rule_sets.is_empty() {
+        route.insert("rule_set".into(), json!(rule_sets));
+    }
+    route.insert("final".into(), json!(input.selected_tag));
+    route.insert("auto_detect_interface".into(), json!(true));
+    route.insert("default_domain_resolver".into(), json!("dns-direct"));
+    Value::Object(route)
 }
 
 pub enum OutboundValue {
@@ -342,8 +440,122 @@ mod tests {
             clash_port: 9911,
             clash_secret: "s3cret",
             log_level: "warn",
+            mode: ProxyMode::SystemProxy,
+            rules: None,
+            ad_block: true,
+            full_dns: true,
         })
         .expect("generate")
+    }
+
+    fn rule_paths() -> RulePaths {
+        RulePaths {
+            geosite_ir: std::path::PathBuf::from("C:/rules/geosite-ir.srs"),
+            geoip_ir: std::path::PathBuf::from("C:/rules/geoip-ir.srs"),
+            ads: std::path::PathBuf::from("C:/rules/geosite-category-ads-all.srs"),
+        }
+    }
+
+    #[test]
+    fn tun_mode_adds_tun_inbound_with_strict_route() {
+        let node = reality_node();
+        let cfg = generate(&GenInput {
+            nodes: std::slice::from_ref(&node),
+            selected_tag: &node.tag(),
+            local_port: Some(2080),
+            allow_lan: false,
+            clash_port: 9911,
+            clash_secret: "s",
+            log_level: "warn",
+            mode: ProxyMode::Tun,
+            rules: None,
+            ad_block: true,
+            full_dns: true,
+        })
+        .expect("generate");
+        let tun = &cfg["inbounds"][1];
+        assert_eq!(tun["type"], "tun");
+        assert_eq!(tun["auto_route"], true);
+        assert_eq!(tun["strict_route"], true);
+        // FakeIP only in TUN mode
+        let servers = cfg["dns"]["servers"].as_array().expect("servers");
+        assert!(servers.iter().any(|s| s["type"] == "fakeip"));
+        assert_eq!(cfg["dns"]["independent_cache"], true);
+    }
+
+    #[test]
+    fn rules_produce_rule_sets_and_reject() {
+        let node = reality_node();
+        let paths = rule_paths();
+        let cfg = generate(&GenInput {
+            nodes: std::slice::from_ref(&node),
+            selected_tag: &node.tag(),
+            local_port: Some(2080),
+            allow_lan: false,
+            clash_port: 9911,
+            clash_secret: "s",
+            log_level: "warn",
+            mode: ProxyMode::SystemProxy,
+            rules: Some(&paths),
+            ad_block: true,
+            full_dns: true,
+        })
+        .expect("generate");
+        let rules = cfg["route"]["rules"].as_array().expect("rules");
+        assert!(rules.iter().any(|r| r["ip_is_private"] == true));
+        assert!(rules
+            .iter()
+            .any(|r| r["rule_set"].as_array().is_some_and(|s| s.contains(&json!("geosite-ir")))
+                && r["outbound"] == "direct"));
+        assert!(rules.iter().any(|r| r["action"] == "reject"));
+        assert_eq!(cfg["route"]["rule_set"].as_array().map(|a| a.len()), Some(3));
+        // DNS split: Iranian domains resolve locally
+        let dns_rules = cfg["dns"]["rules"].as_array().expect("dns rules");
+        assert!(dns_rules.iter().any(|r| r["server"] == "dns-direct"));
+    }
+
+    #[test]
+    fn ad_block_off_removes_reject_rule() {
+        let node = reality_node();
+        let paths = rule_paths();
+        let cfg = generate(&GenInput {
+            nodes: std::slice::from_ref(&node),
+            selected_tag: &node.tag(),
+            local_port: Some(2080),
+            allow_lan: false,
+            clash_port: 9911,
+            clash_secret: "s",
+            log_level: "warn",
+            mode: ProxyMode::SystemProxy,
+            rules: Some(&paths),
+            ad_block: false,
+            full_dns: true,
+        })
+        .expect("generate");
+        let rules = cfg["route"]["rules"].as_array().expect("rules");
+        assert!(!rules.iter().any(|r| r["action"] == "reject"));
+        assert_eq!(cfg["route"]["rule_set"].as_array().map(|a| a.len()), Some(2));
+    }
+
+    #[test]
+    fn minimal_dns_for_ephemeral_instances() {
+        let node = reality_node();
+        let cfg = generate(&GenInput {
+            nodes: std::slice::from_ref(&node),
+            selected_tag: &node.tag(),
+            local_port: None,
+            allow_lan: false,
+            clash_port: 9911,
+            clash_secret: "s",
+            log_level: "warn",
+            mode: ProxyMode::ProxyOnly,
+            rules: None,
+            ad_block: false,
+            full_dns: false,
+        })
+        .expect("generate");
+        assert_eq!(cfg["dns"]["final"], "dns-direct");
+        assert_eq!(cfg["dns"]["servers"].as_array().map(|a| a.len()), Some(1));
     }
 
     #[test]
@@ -430,6 +642,10 @@ mod tests {
             clash_port: 9911,
             clash_secret: "s",
             log_level: "warn",
+            mode: ProxyMode::SystemProxy,
+            rules: None,
+            ad_block: true,
+            full_dns: true,
         })
         .expect("generate");
         assert_eq!(cfg_lan["inbounds"][0]["listen"], "0.0.0.0");
@@ -446,6 +662,10 @@ mod tests {
             clash_port: 9911,
             clash_secret: "s",
             log_level: "warn",
+            mode: ProxyMode::ProxyOnly,
+            rules: None,
+            ad_block: false,
+            full_dns: false,
         })
         .expect("generate");
         assert_eq!(cfg["inbounds"].as_array().map(|a| a.len()), Some(0));
@@ -473,6 +693,10 @@ mod tests {
             clash_port: 9911,
             clash_secret: "s",
             log_level: "warn",
+            mode: ProxyMode::SystemProxy,
+            rules: None,
+            ad_block: true,
+            full_dns: true,
         })
         .is_err());
     }

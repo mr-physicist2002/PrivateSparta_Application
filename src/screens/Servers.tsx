@@ -9,6 +9,7 @@ import {
   X,
 } from "lucide-react";
 import { useAppStore } from "../state/store";
+import { useT } from "../i18n";
 import type { NodeView } from "../ipc/types";
 import { VirtualList } from "../components/VirtualList";
 import { LatencyBadge } from "../components/LatencyBadge";
@@ -25,6 +26,7 @@ interface Row {
 }
 
 export function Servers() {
+  const t = useT();
   const store = useAppStore();
   const {
     manualNodes,
@@ -78,7 +80,12 @@ export function Servers() {
     if (manualNodes.length > 0) {
       const nodes = order([...manualNodes]);
       if (nodes.length > 0) {
-        out.push({ kind: "header", key: "h-manual", title: "Manual", count: nodes.length });
+        out.push({
+          kind: "header",
+          key: "h-manual",
+          title: t("manualGroup"),
+          count: nodes.length,
+        });
         nodes.forEach((n) =>
           out.push({ kind: "node", key: n.id, node: n, deletable: true }),
         );
@@ -97,7 +104,8 @@ export function Servers() {
       }
     }
     return out;
-  }, [manualNodes, subscriptions, query, sort, protocolFilter]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [manualNodes, subscriptions, query, sort, protocolFilter, t]);
 
   return (
     <main className="flex min-h-0 flex-1 flex-col gap-3 px-6 py-5">
@@ -105,13 +113,13 @@ export function Servers() {
         <div className="relative flex-1">
           <Search
             size={14}
-            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted"
+            className="absolute start-2.5 top-1/2 -translate-y-1/2 text-text-muted rtl:translate-x-0"
           />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search servers"
-            className="w-full rounded-input border border-border bg-bg-surface py-1.5 pl-8 pr-3 text-sm outline-none placeholder:text-text-muted focus:border-border-strong"
+            placeholder={t("searchServers")}
+            className="w-full rounded-input border border-border bg-bg-surface py-1.5 pe-3 ps-8 text-sm outline-none placeholder:text-text-muted focus:border-border-strong"
           />
         </div>
         <select
@@ -119,7 +127,7 @@ export function Servers() {
           onChange={(e) => setProtocolFilter(e.target.value)}
           className="rounded-input border border-border bg-bg-surface px-2 py-1.5 text-xs text-text-secondary outline-none"
         >
-          <option value="all">All protocols</option>
+          <option value="all">{t("allProtocols")}</option>
           {protocols.map((p) => (
             <option key={p} value={p}>
               {p}
@@ -131,9 +139,9 @@ export function Servers() {
           onChange={(e) => setSort(e.target.value as SortKey)}
           className="rounded-input border border-border bg-bg-surface px-2 py-1.5 text-xs text-text-secondary outline-none"
         >
-          <option value="added">By added</option>
-          <option value="name">By name</option>
-          <option value="latency">By latency</option>
+          <option value="added">{t("sortAdded")}</option>
+          <option value="name">{t("sortName")}</option>
+          <option value="latency">{t("sortLatency")}</option>
         </select>
         {testing.running ? (
           <button
@@ -151,7 +159,7 @@ export function Servers() {
             className="flex items-center gap-1.5 rounded-input border border-border-strong px-3 py-1.5 text-xs transition-colors duration-[140ms] hover:border-accent hover:text-accent"
           >
             <Activity size={13} />
-            Test all
+            {t("testAll")}
           </button>
         )}
       </div>
@@ -159,9 +167,7 @@ export function Servers() {
       {rows.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
           <p className="text-sm text-text-secondary">
-            {query || protocolFilter !== "all"
-              ? "Nothing matches."
-              : "Paste a subscription link or import from clipboard."}
+            {query || protocolFilter !== "all" ? t("nothingMatches") : t("emptyHint")}
           </p>
           {!query && protocolFilter === "all" ? (
             <button
@@ -169,7 +175,7 @@ export function Servers() {
               className="flex items-center gap-2 rounded-input border border-border-strong px-4 py-2 text-sm font-medium transition-colors duration-[140ms] hover:border-accent hover:text-accent"
             >
               <ClipboardPaste size={15} />
-              Import from clipboard
+              {t("importFromClipboard")}
             </button>
           ) : null}
         </div>
@@ -219,6 +225,7 @@ function NodeRow(props: {
   onFavorite: () => void;
   onDelete: () => void;
 }) {
+  const t = useT();
   const { node, selected, locked, deletable } = props;
   return (
     <div
@@ -231,7 +238,7 @@ function NodeRow(props: {
       <button
         onClick={props.onSelect}
         disabled={locked}
-        className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-not-allowed"
+        className="flex min-w-0 flex-1 items-center gap-2 text-start disabled:cursor-not-allowed"
       >
         <span className="truncate text-sm">{node.name}</span>
         <span className="shrink-0 rounded-input bg-bg-elevated px-1.5 py-0.5 font-mono text-2xs text-text-secondary">
@@ -241,16 +248,16 @@ function NodeRow(props: {
       <LatencyBadge ms={node.latencyMs} />
       <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity duration-[140ms] group-hover:opacity-100">
         <button
-          aria-label="Test latency"
-          title="Test latency"
+          aria-label={t("testLatency")}
+          title={t("testLatency")}
           onClick={props.onTest}
           className="rounded p-1.5 text-text-muted hover:text-accent"
         >
           <Activity size={13} />
         </button>
         <button
-          aria-label="Copy link"
-          title="Copy link"
+          aria-label={t("copyLink")}
+          title={t("copyLink")}
           onClick={props.onCopy}
           className="rounded p-1.5 text-text-muted hover:text-accent"
         >
@@ -258,8 +265,8 @@ function NodeRow(props: {
         </button>
         {deletable ? (
           <button
-            aria-label="Delete"
-            title="Delete"
+            aria-label={t("delete")}
+            title={t("delete")}
             onClick={props.onDelete}
             disabled={locked}
             className="rounded p-1.5 text-text-muted hover:text-danger disabled:opacity-30"
@@ -269,8 +276,8 @@ function NodeRow(props: {
         ) : null}
       </div>
       <button
-        aria-label={node.favorite ? "Unpin" : "Pin"}
-        title={node.favorite ? "Unpin" : "Pin"}
+        aria-label={node.favorite ? t("unpin") : t("pin")}
+        title={node.favorite ? t("unpin") : t("pin")}
         onClick={props.onFavorite}
         className={`shrink-0 rounded p-1.5 transition-colors duration-[140ms] ${
           node.favorite

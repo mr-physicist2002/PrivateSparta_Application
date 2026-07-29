@@ -49,6 +49,7 @@ export function VirtualList<T>({
     <div
       ref={measure}
       onScroll={onScroll}
+      data-virtual-scroll
       className={`overflow-y-auto ${className ?? ""}`}
     >
       <div style={{ height: items.length * itemHeight, position: "relative" }}>

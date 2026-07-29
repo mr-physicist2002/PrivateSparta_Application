@@ -1,5 +1,6 @@
 import { ArrowDown, ArrowUp, ClipboardPaste } from "lucide-react";
 import { findNode, useAppStore } from "../state/store";
+import { useT } from "../i18n";
 import { ConnectControl } from "../components/ConnectControl";
 import { ModeChip } from "../components/ModeChip";
 import { LatencyBadge } from "../components/LatencyBadge";
@@ -20,6 +21,7 @@ function Stat({ label, value }: { label: string; value: string }) {
 }
 
 export function Home() {
+  const t = useT();
   const store = useAppStore();
   const {
     connection,
@@ -57,33 +59,31 @@ export function Home() {
           onClick={() => setScreen("servers")}
           className="text-sm text-text-secondary transition-colors duration-[140ms] hover:text-accent"
         >
-          Pick a server →
+          {t("pickServer")}
         </button>
       ) : (
         <div className="flex flex-col items-center gap-3 text-center">
-          <p className="text-sm text-text-secondary">
-            Paste a subscription link or import from clipboard.
-          </p>
+          <p className="text-sm text-text-secondary">{t("emptyHint")}</p>
           <div className="flex gap-2">
             <button
               onClick={() => void previewImport()}
               className="flex items-center gap-2 rounded-input border border-border-strong px-4 py-2 text-sm font-medium transition-colors duration-[140ms] hover:border-accent hover:text-accent"
             >
               <ClipboardPaste size={15} />
-              Import from clipboard
+              {t("importFromClipboard")}
             </button>
             <button
               onClick={() => setScreen("subscriptions")}
               className="rounded-input border border-border-strong px-4 py-2 text-sm font-medium transition-colors duration-[140ms] hover:border-accent hover:text-accent"
             >
-              Add subscription
+              {t("addSubscription")}
             </button>
           </div>
         </div>
       )}
 
       {connection.state === "connected" ? (
-        <div className="flex items-center gap-8 rounded-card border border-border bg-bg-surface px-6 py-3">
+        <div className="flex items-center gap-8 rounded-card border border-border bg-bg-surface px-6 py-3" dir="ltr">
           <div className="flex items-center gap-1.5">
             <ArrowUp size={13} className="text-text-muted" />
             <span className="tabular w-20 text-right font-mono text-sm">
@@ -97,22 +97,25 @@ export function Home() {
             </span>
           </div>
           <Stat
-            label="Session"
+            label={t("session")}
             value={formatBytes((traffic?.upTotal ?? 0) + (traffic?.downTotal ?? 0))}
           />
-          <Stat label="Time" value={formatDuration(traffic?.seconds ?? 0)} />
+          <Stat label={t("time")} value={formatDuration(traffic?.seconds ?? 0)} />
         </div>
       ) : null}
 
       {parentSub?.userInfo ? (
         <div className="w-full max-w-sm">
           <div className="mb-1 flex justify-between text-2xs text-text-muted">
-            <span>
-              {formatBytes(parentSub.userInfo.upload + parentSub.userInfo.download)} of{" "}
+            <span className="tabular font-mono" dir="ltr">
+              {formatBytes(parentSub.userInfo.upload + parentSub.userInfo.download)}
+              {" / "}
               {formatBytes(parentSub.userInfo.total)}
             </span>
             {parentSub.userInfo.expire ? (
-              <span>expires {formatExpiry(parentSub.userInfo.expire)}</span>
+              <span>
+                {t("expires")} {formatExpiry(parentSub.userInfo.expire)}
+              </span>
             ) : null}
           </div>
           <div className="h-1 overflow-hidden rounded-full bg-bg-elevated">

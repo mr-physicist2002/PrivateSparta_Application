@@ -45,6 +45,8 @@ pub struct ConnectRequest {
     pub local_port: u16,
     pub allow_lan: bool,
     pub log_level: String,
+    pub rules: Option<crate::rules::RulePaths>,
+    pub ad_block: bool,
 }
 
 pub struct Supervisor {
@@ -225,7 +227,11 @@ async fn run_connection(ctx: RunCtx) {
     let mut attempt: u32 = 0;
 
     loop {
-        let mut child = match spawn_core(&prep.config_path, &stderr_ring) {
+        let logs = {
+            use tauri::Manager as _;
+            Arc::clone(&app.state::<crate::commands::AppState>().logs)
+        };
+        let mut child = match spawn_core(&prep.config_path, &stderr_ring, logs) {
             Ok(child) => child,
             Err(err) => {
                 teardown_proxy(&app, proxy_set);
@@ -421,6 +427,10 @@ async fn prepare(app: &AppHandle, request: &ConnectRequest) -> Result<Prepared, 
         clash_port,
         clash_secret: &secret,
         log_level: &request.log_level,
+        mode: request.mode,
+        rules: request.rules.as_ref(),
+        ad_block: request.ad_block,
+        full_dns: true,
     })?;
     let config_path = data_dir.join("run-config.json");
     write_and_check(&config, &config_path).await?;
@@ -463,6 +473,7 @@ pub async fn write_and_check(
 pub fn spawn_core(
     config_path: &PathBuf,
     stderr_ring: &Arc<Mutex<VecDeque<String>>>,
+    logs: Arc<crate::logs::LogBuffer>,
 ) -> Result<Child, AppError> {
     let bin = sidecar_path()?;
     let mut cmd = Command::new(&bin);
@@ -479,10 +490,13 @@ pub fn spawn_core(
         .map_err(|e| AppError::Core(format!("Couldn't start the tunnel core: {e}")))?;
 
     if let Some(stdout) = child.stdout.take() {
+        let logs = Arc::clone(&logs);
         tauri::async_runtime::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                tracing::info!(target: "core", "{}", redact(&line));
+                let clean = redact(&line);
+                tracing::info!(target: "core", "{clean}");
+                logs.push(clean);
             }
         });
     }
@@ -493,6 +507,7 @@ pub fn spawn_core(
             while let Ok(Some(line)) = lines.next_line().await {
                 let clean = redact(&line);
                 tracing::warn!(target: "core", "{clean}");
+                logs.push(clean.clone());
                 let mut ring = ring.lock().unwrap_or_else(|p| p.into_inner());
                 if ring.len() >= 12 {
                     ring.pop_front();

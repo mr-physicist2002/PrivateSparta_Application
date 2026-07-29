@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::error::AppError;
 use crate::model::{Node, ProxyMode, Subscription, WindowState};
 
-pub const CURRENT_SCHEMA: u32 = 2;
+pub const CURRENT_SCHEMA: u32 = 3;
 
 fn default_local_port() -> u16 {
     2080
@@ -17,6 +17,12 @@ fn default_log_level() -> String {
 }
 fn default_mode() -> ProxyMode {
     ProxyMode::SystemProxy
+}
+fn default_true() -> bool {
+    true
+}
+fn default_language() -> String {
+    "en".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +42,17 @@ pub struct Settings {
     pub start_minimized: bool,
     #[serde(default)]
     pub auto_connect: bool,
+    /// Split routing (Iran direct, private direct) — on by default per brief.
+    #[serde(default = "default_true")]
+    pub rules_enabled: bool,
+    #[serde(default = "default_true")]
+    pub ad_block: bool,
+    /// Background .srs refresh — off by default: the app makes zero network
+    /// requests the user didn't initiate.
+    #[serde(default)]
+    pub ruleset_auto_update: bool,
+    #[serde(default = "default_language")]
+    pub language: String,
 }
 
 impl Default for Settings {
@@ -48,6 +65,10 @@ impl Default for Settings {
             autostart: false,
             start_minimized: false,
             auto_connect: false,
+            rules_enabled: true,
+            ad_block: true,
+            ruleset_auto_update: false,
+            language: default_language(),
         }
     }
 }
@@ -202,6 +223,7 @@ fn migrate(mut value: serde_json::Value) -> Result<AppConfig, String> {
             }
         }
     }
+    // v2 -> v3: routing/ad-block/language settings, all serde-defaulted.
     if let Some(v) = value.get_mut("schema_version") {
         *v = serde_json::json!(CURRENT_SCHEMA);
     }
@@ -250,6 +272,26 @@ mod tests {
         assert!(config.subscriptions.is_empty());
         assert!(!config.settings.allow_lan);
         assert_eq!(config.settings.log_level, "warn");
+    }
+
+    #[test]
+    fn migrates_v2_config_keeping_settings() {
+        let v2 = serde_json::json!({
+            "schema_version": 2,
+            "settings": { "mode": "proxy-only", "localPort": 2099, "allowLan": true },
+            "subscriptions": [],
+            "manual_nodes": [],
+            "favorites": []
+        });
+        let config = migrate(v2).expect("migrate");
+        assert_eq!(config.schema_version, CURRENT_SCHEMA);
+        assert_eq!(config.settings.local_port, 2099);
+        assert!(config.settings.allow_lan);
+        // v3 defaults
+        assert!(config.settings.rules_enabled);
+        assert!(config.settings.ad_block);
+        assert!(!config.settings.ruleset_auto_update);
+        assert_eq!(config.settings.language, "en");
     }
 
     #[test]

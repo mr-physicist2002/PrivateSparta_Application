@@ -2,10 +2,13 @@ mod clash;
 mod commands;
 mod config_gen;
 mod core;
+mod elevation;
 mod error;
 mod latency;
+mod logs;
 mod model;
 mod parser;
+mod rules;
 mod store;
 mod subs;
 mod sysproxy;
@@ -58,13 +61,44 @@ pub fn run() {
             #[cfg(not(windows))]
             let supervisor = Supervisor::new();
 
+            let ruleset_auto_update = {
+                // Read before the store moves into managed state.
+                let s = &store.config.settings;
+                s.ruleset_auto_update
+            };
+
             app.manage(AppState {
                 store: Mutex::new(store),
                 supervisor,
                 pending_import: Mutex::new(None),
                 latency: LatencyState::default(),
                 window_state: Mutex::new(window_state),
+                logs: std::sync::Arc::new(logs::LogBuffer::default()),
             });
+
+            logs::start_flusher(app.handle().clone());
+
+            if ruleset_auto_update {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    // Daily, plus once shortly after launch.
+                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(86_400));
+                    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    loop {
+                        ticker.tick().await;
+                        let via_proxy = {
+                            let state = handle.state::<AppState>();
+                            let (conn, _) = state.supervisor.snapshot();
+                            if conn == model::ConnState::Connected {
+                                Some(state.lock_store().config.settings.local_port)
+                            } else {
+                                None
+                            }
+                        };
+                        rules::refresh(&handle, via_proxy).await;
+                    }
+                });
+            }
 
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_size(tauri::PhysicalSize::new(
@@ -141,6 +175,10 @@ pub fn run() {
             commands::set_settings,
             commands::connect,
             commands::disconnect,
+            commands::get_logs,
+            commands::clear_logs,
+            commands::copy_logs,
+            commands::relaunch_elevated,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build the app");

@@ -7,6 +7,7 @@ use uuid::Uuid;
 pub enum ProxyMode {
     SystemProxy,
     ProxyOnly,
+    Tun,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

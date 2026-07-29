@@ -7,7 +7,7 @@ export type ConnectionState =
   | "disconnecting"
   | "error";
 
-export type ProxyMode = "system-proxy" | "proxy-only";
+export type ProxyMode = "system-proxy" | "proxy-only" | "tun";
 export type UpdateInterval = "off" | "6h" | "12h" | "24h";
 
 /** A node as the WebView is allowed to see it: no uuid, no keys. */
@@ -48,6 +48,10 @@ export interface Settings {
   autostart: boolean;
   startMinimized: boolean;
   autoConnect: boolean;
+  rulesEnabled: boolean;
+  adBlock: boolean;
+  rulesetAutoUpdate: boolean;
+  language: string;
 }
 
 export interface ConnectionEvent {
@@ -88,4 +92,13 @@ export interface AppSnapshot {
   selectedNodeId: string | null;
   settings: Settings;
   version: string;
+  elevated: boolean;
+}
+
+export type LogLevel = "debug" | "info" | "warn" | "error";
+
+export interface LogLine {
+  seq: number;
+  level: LogLevel;
+  text: string;
 }

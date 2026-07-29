@@ -23,6 +23,7 @@ pub struct AppState {
     pub pending_import: Mutex<Option<Vec<Node>>>,
     pub latency: LatencyState,
     pub window_state: Mutex<crate::model::WindowState>,
+    pub logs: std::sync::Arc<crate::logs::LogBuffer>,
 }
 
 impl AppState {
@@ -44,6 +45,7 @@ pub struct AppSnapshot {
     selected_node_id: Option<Uuid>,
     settings: Settings,
     version: String,
+    elevated: bool,
 }
 
 #[derive(Serialize)]
@@ -96,6 +98,7 @@ pub fn get_snapshot(app: AppHandle, state: State<'_, AppState>) -> AppSnapshot {
         selected_node_id: store.config.last_selected,
         settings: store.config.settings.clone(),
         version: app.package_info().version.to_string(),
+        elevated: crate::elevation::is_elevated(),
     }
 }
 
@@ -382,6 +385,37 @@ pub fn set_settings(
     Ok(())
 }
 
+// ---------- logs / elevation ----------
+
+#[tauri::command]
+pub fn get_logs(state: State<'_, AppState>) -> Vec<crate::logs::LogLine> {
+    state.logs.all()
+}
+
+#[tauri::command]
+pub fn clear_logs(state: State<'_, AppState>) {
+    state.logs.clear();
+}
+
+#[tauri::command]
+pub fn copy_logs(app: AppHandle, state: State<'_, AppState>) -> Result<(), AppError> {
+    app.clipboard()
+        .write_text(state.logs.joined())
+        .map_err(|_| AppError::Clipboard)
+}
+
+#[tauri::command]
+pub fn relaunch_elevated(app: AppHandle) -> Result<(), AppError> {
+    if crate::elevation::relaunch_elevated() {
+        app.exit(0);
+        Ok(())
+    } else {
+        Err(AppError::Core(
+            "Couldn't restart with administrator rights.".into(),
+        ))
+    }
+}
+
 // ---------- connection ----------
 
 #[tauri::command]
@@ -394,13 +428,30 @@ pub fn connect(app: AppHandle, state: State<'_, AppState>) -> Result<(), AppErro
             .find_node(selected_id)
             .cloned()
             .ok_or(AppError::NoNodeSelected)?;
+        let settings = &store.config.settings;
+        if settings.mode == crate::model::ProxyMode::Tun && !crate::elevation::is_elevated() {
+            return Err(AppError::Core(
+                "TUN mode needs administrator rights. Restart as administrator, or switch modes.".into(),
+            ));
+        }
+        let rules = if settings.rules_enabled {
+            let resolved = crate::rules::resolve(&app);
+            if resolved.is_none() {
+                tracing::warn!("rule-sets missing; connecting without split routing");
+            }
+            resolved
+        } else {
+            None
+        };
         ConnectRequest {
             nodes: store.config.all_nodes().cloned().collect(),
             selected,
-            mode: store.config.settings.mode,
-            local_port: store.config.settings.local_port,
-            allow_lan: store.config.settings.allow_lan,
-            log_level: store.config.settings.log_level.clone(),
+            mode: settings.mode,
+            local_port: settings.local_port,
+            allow_lan: settings.allow_lan,
+            log_level: settings.log_level.clone(),
+            rules,
+            ad_block: settings.ad_block,
         }
     };
     state.supervisor.connect(&app, request)

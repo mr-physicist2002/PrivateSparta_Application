@@ -1,23 +1,26 @@
-import { House, Server, Rss, Settings } from "lucide-react";
+import { House, Server, Rss, ScrollText, Settings } from "lucide-react";
 import { useAppStore, type Screen } from "../state/store";
+import { useT, type MessageKey } from "../i18n";
 
-const ITEMS: Array<{ screen: Screen; label: string; Icon: typeof House }> = [
-  { screen: "home", label: "Home", Icon: House },
-  { screen: "servers", label: "Servers", Icon: Server },
-  { screen: "subscriptions", label: "Subscriptions", Icon: Rss },
-  { screen: "settings", label: "Settings", Icon: Settings },
+const ITEMS: Array<{ screen: Screen; labelKey: MessageKey; Icon: typeof House }> = [
+  { screen: "home", labelKey: "navHome", Icon: House },
+  { screen: "servers", labelKey: "navServers", Icon: Server },
+  { screen: "subscriptions", labelKey: "navSubscriptions", Icon: Rss },
+  { screen: "logs", labelKey: "navLogs", Icon: ScrollText },
+  { screen: "settings", labelKey: "navSettings", Icon: Settings },
 ];
 
 export function Rail() {
+  const t = useT();
   const screen = useAppStore((s) => s.screen);
   const setScreen = useAppStore((s) => s.setScreen);
   return (
-    <nav className="flex w-14 shrink-0 flex-col items-center gap-1 border-r border-border py-3">
-      {ITEMS.map(({ screen: target, label, Icon }) => (
+    <nav className="flex w-14 shrink-0 flex-col items-center gap-1 border-e border-border py-3">
+      {ITEMS.map(({ screen: target, labelKey, Icon }) => (
         <button
           key={target}
-          aria-label={label}
-          title={label}
+          aria-label={t(labelKey)}
+          title={t(labelKey)}
           onClick={() => setScreen(target)}
           className={`flex size-10 items-center justify-center rounded-card transition-colors duration-[140ms] ${
             screen === target

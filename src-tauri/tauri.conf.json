@@ -31,6 +31,10 @@
     "active": true,
     "targets": ["nsis"],
     "externalBin": ["binaries/sing-box"],
+    "resources": {
+      "resources/wintun.dll": "./wintun.dll",
+      "resources/rulesets/": "rulesets/"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

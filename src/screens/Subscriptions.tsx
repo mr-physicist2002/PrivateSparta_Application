@@ -1,25 +1,20 @@
 import { useState } from "react";
 import { Eye, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useAppStore } from "../state/store";
+import { interpolate, useT } from "../i18n";
 import type { SubscriptionView, UpdateInterval } from "../ipc/types";
 import { revealSubscriptionUrl } from "../ipc/commands";
 import { formatBytes, formatExpiry, formatRelative } from "../lib/format";
 
-const INTERVALS: Array<{ value: UpdateInterval; label: string }> = [
-  { value: "off", label: "Manual" },
-  { value: "6h", label: "Every 6 h" },
-  { value: "12h", label: "Every 12 h" },
-  { value: "24h", label: "Every 24 h" },
-];
-
 export function Subscriptions() {
+  const t = useT();
   const { subscriptions } = useAppStore();
   return (
     <main className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 py-5">
       <AddForm />
       {subscriptions.length === 0 ? (
         <p className="mt-8 text-center text-sm text-text-secondary">
-          Paste your subscription link above to get started.
+          {t("subEmptyHint")}
         </p>
       ) : (
         subscriptions.map((sub) => <SubCard key={sub.id} sub={sub} />)
@@ -29,6 +24,7 @@ export function Subscriptions() {
 }
 
 function AddForm() {
+  const t = useT();
   const addSubscription = useAppStore((s) => s.addSubscription);
   const [url, setUrl] = useState("");
   const [name, setName] = useState("");
@@ -51,14 +47,15 @@ function AddForm() {
         value={url}
         onChange={(e) => setUrl(e.target.value)}
         onKeyDown={(e) => e.key === "Enter" && void submit()}
-        placeholder="Subscription link (https://…)"
+        placeholder={t("subLinkPlaceholder")}
+        dir="ltr"
         className="min-w-0 flex-[2] rounded-input border border-border bg-bg-surface px-3 py-2 text-sm outline-none placeholder:text-text-muted focus:border-border-strong"
       />
       <input
         value={name}
         onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => e.key === "Enter" && void submit()}
-        placeholder="Name (optional)"
+        placeholder={t("subNamePlaceholder")}
         className="min-w-0 flex-1 rounded-input border border-border bg-bg-surface px-3 py-2 text-sm outline-none placeholder:text-text-muted focus:border-border-strong"
       />
       <button
@@ -71,15 +68,22 @@ function AddForm() {
         ) : (
           <Plus size={14} />
         )}
-        Add
+        {t("add")}
       </button>
     </div>
   );
 }
 
 function SubCard({ sub }: { sub: SubscriptionView }) {
+  const t = useT();
   const { updateSubscription, deleteSubscription, setSubAutoUpdate, connection, toast } =
     useAppStore();
+  const INTERVALS: Array<{ value: UpdateInterval; label: string }> = [
+    { value: "off", label: t("intervalManual") },
+    { value: "6h", label: t("interval6h") },
+    { value: "12h", label: t("interval12h") },
+    { value: "24h", label: t("interval24h") },
+  ];
   const [revealed, setRevealed] = useState<string | null>(null);
   const [updating, setUpdating] = useState(false);
   const locked = connection.state !== "disconnected" && connection.state !== "error";
@@ -99,7 +103,7 @@ function SubCard({ sub }: { sub: SubscriptionView }) {
     try {
       setRevealed(await revealSubscriptionUrl(sub.id));
     } catch {
-      toast("error", "Couldn't read the link.");
+      toast("error", t("toastLinkUnreadable"));
     }
   };
 
@@ -110,11 +114,12 @@ function SubCard({ sub }: { sub: SubscriptionView }) {
           <h3 className="truncate font-display text-base font-semibold">{sub.name}</h3>
           <button
             onClick={() => void reveal()}
-            title={revealed ? "Hide link" : "Reveal link"}
             className="mt-0.5 flex max-w-full items-center gap-1.5 font-mono text-2xs text-text-muted transition-colors duration-[140ms] hover:text-text-secondary"
           >
             <Eye size={11} className="shrink-0" />
-            <span className="truncate select-text">{revealed ?? sub.urlMasked}</span>
+            <span className="truncate select-text" dir="ltr">
+              {revealed ?? sub.urlMasked}
+            </span>
           </button>
         </div>
         <div className="flex shrink-0 items-center gap-1">
@@ -132,8 +137,8 @@ function SubCard({ sub }: { sub: SubscriptionView }) {
             ))}
           </select>
           <button
-            aria-label="Update now"
-            title="Update now"
+            aria-label={t("updateNow")}
+            title={t("updateNow")}
             onClick={() => void update()}
             disabled={updating}
             className="rounded p-1.5 text-text-muted transition-colors duration-[140ms] hover:text-accent disabled:opacity-40"
@@ -141,8 +146,8 @@ function SubCard({ sub }: { sub: SubscriptionView }) {
             <RefreshCw size={14} className={updating ? "animate-spin" : undefined} />
           </button>
           <button
-            aria-label="Delete subscription"
-            title="Delete subscription"
+            aria-label={t("delete")}
+            title={t("delete")}
             onClick={() => void deleteSubscription(sub.id)}
             disabled={locked}
             className="rounded p-1.5 text-text-muted transition-colors duration-[140ms] hover:text-danger disabled:opacity-30"
@@ -153,10 +158,24 @@ function SubCard({ sub }: { sub: SubscriptionView }) {
       </div>
 
       <div className="mt-3 flex items-center gap-4 text-2xs text-text-muted">
-        <span className="tabular font-mono">{sub.nodeCount} servers</span>
-        {sub.lastUpdated ? <span>updated {formatRelative(sub.lastUpdated)}</span> : null}
+        <span className="tabular font-mono">
+          {interpolate(t("serversCount"), sub.nodeCount)}
+        </span>
+        {sub.lastUpdated ? (
+          <span>
+            {t("updatedPrefix")}{" "}
+            {formatRelative(sub.lastUpdated, {
+              justNow: t("justNow"),
+              minutesAgo: t("minutesAgo"),
+              hoursAgo: t("hoursAgo"),
+              daysAgo: t("daysAgo"),
+            })}
+          </span>
+        ) : null}
         {sub.userInfo?.expire ? (
-          <span>expires {formatExpiry(sub.userInfo.expire)}</span>
+          <span>
+            {t("expires")} {formatExpiry(sub.userInfo.expire)}
+          </span>
         ) : null}
       </div>
 

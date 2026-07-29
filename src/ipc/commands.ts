@@ -41,3 +41,9 @@ export const setSettings = (settings: Settings) =>
 
 export const connect = () => invoke<void>("connect");
 export const disconnect = () => invoke<void>("disconnect");
+
+export const getLogs = () => invoke<import("./types").LogLine[]>("get_logs");
+export const clearLogs = () => invoke<void>("clear_logs");
+/** Joins and copies in Rust; log text never round-trips through JS. */
+export const copyLogs = () => invoke<void>("copy_logs");
+export const relaunchElevated = () => invoke<void>("relaunch_elevated");

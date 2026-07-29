@@ -149,13 +149,18 @@ async fn spawn_ephemeral(
         clash_port,
         clash_secret: &secret,
         log_level: "warn",
+        mode: crate::model::ProxyMode::ProxyOnly,
+        rules: None,
+        ad_block: false,
+        full_dns: false,
     })?;
     let dir = supervisor::data_dir(app)?;
     let path = dir.join("test-config.json");
     supervisor::write_and_check(&config, &path).await?;
 
     let ring = Arc::new(Mutex::new(std::collections::VecDeque::new()));
-    let mut child = supervisor::spawn_core(&path, &ring)?;
+    let state_for_logs = app.state::<AppState>();
+    let mut child = supervisor::spawn_core(&path, &ring, Arc::clone(&state_for_logs.logs))?;
     let state = app.state::<AppState>();
     state.supervisor.assign_to_job(&child);
     if !supervisor::wait_for_port(&mut child, clash_port).await {

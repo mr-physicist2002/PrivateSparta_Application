@@ -33,10 +33,18 @@ export function formatExpiry(unixSeconds: number): string {
   });
 }
 
-export function formatRelative(unixSeconds: number): string {
+export interface RelativeStrings {
+  justNow: string;
+  minutesAgo: string;
+  hoursAgo: string;
+  daysAgo: string;
+}
+
+export function formatRelative(unixSeconds: number, strings: RelativeStrings): string {
   const delta = Math.floor(Date.now() / 1000) - unixSeconds;
-  if (delta < 60) return "just now";
-  if (delta < 3600) return `${Math.floor(delta / 60)} min ago`;
-  if (delta < 86400) return `${Math.floor(delta / 3600)} h ago`;
-  return `${Math.floor(delta / 86400)} d ago`;
+  const put = (template: string, n: number) => template.replace("{n}", String(n));
+  if (delta < 60) return strings.justNow;
+  if (delta < 3600) return put(strings.minutesAgo, Math.floor(delta / 60));
+  if (delta < 86400) return put(strings.hoursAgo, Math.floor(delta / 3600));
+  return put(strings.daysAgo, Math.floor(delta / 86400));
 }

@@ -3,6 +3,7 @@ import type {
   AppSnapshot,
   ConnectionEvent,
   ImportPreview,
+  LogLine,
   NodeView,
   Settings,
   SubscriptionView,
@@ -11,15 +12,17 @@ import type {
   UpdateInterval,
 } from "../ipc/types";
 import * as ipc from "../ipc/commands";
+import { interpolate, t } from "../i18n";
 import {
   onConnectionState,
   onLatencyResult,
+  onLogBatch,
   onSubsChanged,
   onTestProgress,
   onTraffic,
 } from "../ipc/events";
 
-export type Screen = "home" | "servers" | "subscriptions" | "settings";
+export type Screen = "home" | "servers" | "subscriptions" | "logs" | "settings";
 
 interface Toast {
   id: number;
@@ -36,10 +39,12 @@ interface AppStore {
   selectedNodeId: string | null;
   settings: Settings;
   version: string;
+  elevated: boolean;
   traffic: TrafficEvent | null;
   testing: TestProgress;
   importPreview: ImportPreview | null;
   toasts: Toast[];
+  logLines: LogLine[];
 
   init: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -67,6 +72,11 @@ interface AppStore {
 
   saveSettings: (settings: Settings) => Promise<void>;
   toggleConnection: () => Promise<void>;
+
+  loadLogs: () => Promise<void>;
+  clearLogs: () => Promise<void>;
+  copyLogs: () => Promise<void>;
+  relaunchElevated: () => Promise<void>;
 }
 
 let toastSeq = 0;
@@ -83,6 +93,10 @@ const defaultSettings: Settings = {
   autostart: false,
   startMinimized: false,
   autoConnect: false,
+  rulesEnabled: true,
+  adBlock: true,
+  rulesetAutoUpdate: false,
+  language: "en",
 };
 
 function patchLatency(
@@ -102,10 +116,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
   selectedNodeId: null,
   settings: defaultSettings,
   version: "",
+  elevated: false,
   traffic: null,
   testing: { running: false, done: 0, total: 0 },
   importPreview: null,
   toasts: [],
+  logLines: [],
 
   init: async () => {
     await onConnectionState((connection) => {
@@ -129,6 +145,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
     });
     await onTestProgress((testing) => set({ testing }));
     await onSubsChanged(() => void get().refresh());
+    await onLogBatch((batch) => {
+      set((s) => {
+        const merged = [...s.logLines, ...batch];
+        return { logLines: merged.length > 2000 ? merged.slice(-2000) : merged };
+      });
+    });
     await get().refresh();
     set({ ready: true });
   },
@@ -142,6 +164,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       selectedNodeId: snap.selectedNodeId,
       settings: snap.settings,
       version: snap.version,
+      elevated: snap.elevated,
     });
   },
 
@@ -163,8 +186,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
         get().toast(
           "error",
           preview.skipped > 0
-            ? "Clipboard has links, but none could be read."
-            : "No server link found in the clipboard.",
+            ? t("toastClipboardUnreadable")
+            : t("toastClipboardNoLink"),
         );
         return;
       }
@@ -181,7 +204,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await ipc.commitClipboardImport();
       set({ importPreview: null });
       await get().refresh();
-      get().toast("info", "Imported.");
+      get().toast("info", t("toastImported"));
     } catch (e) {
       get().toast("error", errorText(e));
     }
@@ -191,7 +214,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     try {
       await ipc.addSubscription(name, url);
       await get().refresh();
-      get().toast("info", "Subscription added.");
+      get().toast("info", t("toastSubAdded"));
       return true;
     } catch (e) {
       await get().refresh(); // sub may exist with lastError set
@@ -203,7 +226,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   updateSubscription: async (id) => {
     try {
       const count = await ipc.updateSubscription(id);
-      get().toast("info", `Updated — ${count} servers.`);
+      get().toast("info", interpolate(t("toastUpdatedN"), count));
     } catch (e) {
       get().toast("error", errorText(e));
     }
@@ -258,7 +281,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   copyNodeLink: async (id) => {
     try {
       await ipc.copyNodeLink(id);
-      get().toast("info", "Link copied.");
+      get().toast("info", t("toastLinkCopied"));
     } catch (e) {
       get().toast("error", errorText(e));
     }
@@ -288,7 +311,37 @@ export const useAppStore = create<AppStore>((set, get) => ({
     try {
       await ipc.setSettings(settings);
       set({ settings });
-      get().toast("info", "Settings saved.");
+      get().toast("info", t("toastSettingsSaved"));
+    } catch (e) {
+      get().toast("error", errorText(e));
+    }
+  },
+
+  loadLogs: async () => {
+    try {
+      set({ logLines: await ipc.getLogs() });
+    } catch (e) {
+      get().toast("error", errorText(e));
+    }
+  },
+
+  clearLogs: async () => {
+    await ipc.clearLogs();
+    set({ logLines: [] });
+  },
+
+  copyLogs: async () => {
+    try {
+      await ipc.copyLogs();
+      get().toast("info", t("toastLogsCopied"));
+    } catch (e) {
+      get().toast("error", errorText(e));
+    }
+  },
+
+  relaunchElevated: async () => {
+    try {
+      await ipc.relaunchElevated();
     } catch (e) {
       get().toast("error", errorText(e));
     }
