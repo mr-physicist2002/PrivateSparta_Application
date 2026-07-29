@@ -1,0 +1,8 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/schemas/
+# Bundled core: downloaded, not versioned. Version + SHA-256 pinned in README.
+src-tauri/binaries/
+.claude/settings.local.json
+*.local

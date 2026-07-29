@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+/*
+ * PrivateSparta design tokens — matte black / aged bronze.
+ * Phase 1 ships system fonts; self-hosted subsetted woff2 lands in Phase 3.
+ */
+@theme {
+  --color-*: initial;
+
+  --color-bg-base: #0a0a0b;
+  --color-bg-surface: #121214;
+  --color-bg-elevated: #191a1d;
+  --color-border: #232428;
+  --color-border-strong: #33353b;
+
+  --color-text-primary: #ececee;
+  --color-text-secondary: #9a9ca3;
+  --color-text-muted: #63656c;
+
+  --color-accent: #c2874e;
+  --color-accent-hover: #d49a5e;
+  --color-accent-wash: rgba(194, 135, 78, 0.1);
+
+  --color-ok: #5e9e6e;
+  --color-warn: #c79a3c;
+  --color-danger: #b3312f;
+
+  --font-display: "Archivo", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", monospace;
+
+  --text-2xs: 11px;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 15px;
+  --text-lg: 18px;
+  --text-xl: 24px;
+  --text-display: 40px;
+
+  --radius-input: 6px;
+  --radius-card: 10px;
+  --radius-modal: 14px;
+
+  --ease-app: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg-base);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  cursor: default;
+  overflow: hidden;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0s !important;
+    animation-duration: 0s !important;
+  }
+}
