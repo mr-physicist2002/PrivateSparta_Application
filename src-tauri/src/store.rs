@@ -5,21 +5,49 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::model::{Node, ProxyMode};
+use crate::model::{Node, ProxyMode, Subscription, WindowState};
 
-pub const CURRENT_SCHEMA: u32 = 1;
+pub const CURRENT_SCHEMA: u32 = 2;
+
+fn default_local_port() -> u16 {
+    2080
+}
+fn default_log_level() -> String {
+    "warn".into()
+}
+fn default_mode() -> ProxyMode {
+    ProxyMode::SystemProxy
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Settings {
+    #[serde(default = "default_mode")]
     pub mode: ProxyMode,
+    #[serde(default = "default_local_port")]
     pub local_port: u16,
+    #[serde(default)]
+    pub allow_lan: bool,
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+    #[serde(default)]
+    pub autostart: bool,
+    #[serde(default)]
+    pub start_minimized: bool,
+    #[serde(default)]
+    pub auto_connect: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            mode: ProxyMode::SystemProxy,
-            local_port: 2080,
+            mode: default_mode(),
+            local_port: default_local_port(),
+            allow_lan: false,
+            log_level: default_log_level(),
+            autostart: false,
+            start_minimized: false,
+            auto_connect: false,
         }
     }
 }
@@ -30,9 +58,15 @@ pub struct AppConfig {
     #[serde(default)]
     pub settings: Settings,
     #[serde(default)]
+    pub subscriptions: Vec<Subscription>,
+    #[serde(default)]
     pub manual_nodes: Vec<Node>,
     #[serde(default)]
+    pub favorites: Vec<Uuid>,
+    #[serde(default)]
     pub last_selected: Option<Uuid>,
+    #[serde(default)]
+    pub window: WindowState,
 }
 
 impl Default for AppConfig {
@@ -40,9 +74,28 @@ impl Default for AppConfig {
         AppConfig {
             schema_version: CURRENT_SCHEMA,
             settings: Settings::default(),
+            subscriptions: Vec::new(),
             manual_nodes: Vec::new(),
+            favorites: Vec::new(),
             last_selected: None,
+            window: WindowState::default(),
         }
+    }
+}
+
+impl AppConfig {
+    pub fn all_nodes(&self) -> impl Iterator<Item = &Node> {
+        self.manual_nodes
+            .iter()
+            .chain(self.subscriptions.iter().flat_map(|s| s.nodes.iter()))
+    }
+
+    pub fn find_node(&self, id: Uuid) -> Option<&Node> {
+        self.all_nodes().find(|n| n.id == id)
+    }
+
+    pub fn is_favorite(&self, id: Uuid) -> bool {
+        self.favorites.contains(&id)
     }
 }
 
@@ -126,22 +179,33 @@ fn replace_file(tmp: &Path, dest: &Path) -> std::io::Result<()> {
     std::fs::rename(tmp, dest)
 }
 
-/// Versioned migration. New schema versions add a step here; unknown future
-/// versions refuse to load rather than silently drop data.
-fn migrate(value: serde_json::Value) -> Result<AppConfig, String> {
+/// Versioned migration. Unknown future versions refuse to load rather than
+/// silently drop data.
+fn migrate(mut value: serde_json::Value) -> Result<AppConfig, String> {
     let version = value
         .get("schema_version")
         .and_then(|v| v.as_u64())
         .ok_or("missing schema_version")? as u32;
-    match version {
-        CURRENT_SCHEMA => {
-            serde_json::from_value::<AppConfig>(value).map_err(|e| e.to_string())
-        }
-        v if v > CURRENT_SCHEMA => Err(format!(
-            "config written by a newer version (schema {v})"
-        )),
-        v => Err(format!("no migration path from schema {v}")),
+    if version > CURRENT_SCHEMA {
+        return Err(format!("config written by a newer version (schema {version})"));
     }
+    if version < 1 {
+        return Err(format!("no migration path from schema {version}"));
+    }
+    // v1 -> v2: subscriptions/favorites/window and the settings additions are
+    // new fields with serde defaults, and Settings moved to camelCase keys —
+    // rename what v1 wrote in snake_case so nothing is silently dropped.
+    if version == 1 {
+        if let Some(settings) = value.get_mut("settings").and_then(|s| s.as_object_mut()) {
+            if let Some(port) = settings.remove("local_port") {
+                settings.insert("localPort".into(), port);
+            }
+        }
+    }
+    if let Some(v) = value.get_mut("schema_version") {
+        *v = serde_json::json!(CURRENT_SCHEMA);
+    }
+    serde_json::from_value::<AppConfig>(value).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -163,10 +227,29 @@ mod tests {
         let path = dir.join("config.json");
         let mut store = ConfigStore::load(path.clone());
         store.config.settings.local_port = 3131;
+        store.config.favorites.push(Uuid::new_v4());
         store.save().expect("save");
         let reloaded = ConfigStore::load(path);
         assert_eq!(reloaded.config.settings.local_port, 3131);
+        assert_eq!(reloaded.config.favorites.len(), 1);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn migrates_v1_config() {
+        // Exactly what Phase 1 wrote to disk: snake_case settings keys.
+        let v1 = serde_json::json!({
+            "schema_version": 1,
+            "settings": { "mode": "system-proxy", "local_port": 2081 },
+            "manual_nodes": [],
+            "last_selected": null
+        });
+        let config = migrate(v1).expect("migrate");
+        assert_eq!(config.schema_version, CURRENT_SCHEMA);
+        assert_eq!(config.settings.local_port, 2081);
+        assert!(config.subscriptions.is_empty());
+        assert!(!config.settings.allow_lan);
+        assert_eq!(config.settings.log_level, "warn");
     }
 
     #[test]

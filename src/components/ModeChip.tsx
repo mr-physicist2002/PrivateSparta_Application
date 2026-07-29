@@ -7,8 +7,8 @@ const MODES: Array<{ value: ProxyMode; label: string }> = [
 ];
 
 export function ModeChip() {
-  const mode = useAppStore((s) => s.mode);
-  const setMode = useAppStore((s) => s.setMode);
+  const settings = useAppStore((s) => s.settings);
+  const saveSettings = useAppStore((s) => s.saveSettings);
   const state = useAppStore((s) => s.connection.state);
   const locked = state !== "disconnected" && state !== "error";
 
@@ -18,10 +18,10 @@ export function ModeChip() {
         <button
           key={m.value}
           disabled={locked}
-          onClick={() => void setMode(m.value)}
+          onClick={() => void saveSettings({ ...settings, mode: m.value })}
           title={locked ? "Disconnect to change mode" : undefined}
           className={`rounded-[5px] px-3 py-1 text-xs font-medium transition-colors duration-[140ms] disabled:cursor-not-allowed ${
-            mode === m.value
+            settings.mode === m.value
               ? "bg-bg-elevated text-text-primary"
               : "text-text-muted hover:text-text-secondary"
           }`}

@@ -4,10 +4,22 @@ import type {
   ConnectionEvent,
   ImportPreview,
   NodeView,
-  ProxyMode,
+  Settings,
+  SubscriptionView,
+  TestProgress,
+  TrafficEvent,
+  UpdateInterval,
 } from "../ipc/types";
 import * as ipc from "../ipc/commands";
-import { onConnectionState } from "../ipc/events";
+import {
+  onConnectionState,
+  onLatencyResult,
+  onSubsChanged,
+  onTestProgress,
+  onTraffic,
+} from "../ipc/events";
+
+export type Screen = "home" | "servers" | "subscriptions" | "settings";
 
 interface Toast {
   id: number;
@@ -17,23 +29,43 @@ interface Toast {
 
 interface AppStore {
   ready: boolean;
+  screen: Screen;
   connection: ConnectionEvent;
-  nodes: NodeView[];
+  manualNodes: NodeView[];
+  subscriptions: SubscriptionView[];
   selectedNodeId: string | null;
-  mode: ProxyMode;
-  localPort: number;
+  settings: Settings;
+  version: string;
+  traffic: TrafficEvent | null;
+  testing: TestProgress;
   importPreview: ImportPreview | null;
   toasts: Toast[];
 
   init: () => Promise<void>;
+  refresh: () => Promise<void>;
+  setScreen: (screen: Screen) => void;
   toast: (kind: Toast["kind"], text: string) => void;
   dismissToast: (id: number) => void;
+
   previewImport: () => Promise<void>;
   cancelImport: () => void;
   commitImport: () => Promise<void>;
+
+  addSubscription: (name: string, url: string) => Promise<boolean>;
+  updateSubscription: (id: string) => Promise<void>;
+  deleteSubscription: (id: string) => Promise<void>;
+  setSubAutoUpdate: (id: string, interval: UpdateInterval) => Promise<void>;
+
   selectNode: (id: string) => Promise<void>;
   deleteNode: (id: string) => Promise<void>;
-  setMode: (mode: ProxyMode) => Promise<void>;
+  toggleFavorite: (id: string) => Promise<void>;
+  copyNodeLink: (id: string) => Promise<void>;
+
+  testAll: () => Promise<void>;
+  testOne: (id: string) => Promise<void>;
+  cancelTest: () => Promise<void>;
+
+  saveSettings: (settings: Settings) => Promise<void>;
   toggleConnection: () => Promise<void>;
 }
 
@@ -43,38 +75,82 @@ function errorText(e: unknown): string {
   return typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
 }
 
-export const useAppStore = create<AppStore>((set, get) => ({
-  ready: false,
-  connection: { state: "disconnected", nodeId: null, message: null },
-  nodes: [],
-  selectedNodeId: null,
+const defaultSettings: Settings = {
   mode: "system-proxy",
   localPort: 2080,
+  allowLan: false,
+  logLevel: "warn",
+  autostart: false,
+  startMinimized: false,
+  autoConnect: false,
+};
+
+function patchLatency(
+  nodes: NodeView[],
+  nodeId: string,
+  latencyMs: number | null,
+): NodeView[] {
+  return nodes.map((n) => (n.id === nodeId ? { ...n, latencyMs } : n));
+}
+
+export const useAppStore = create<AppStore>((set, get) => ({
+  ready: false,
+  screen: "home",
+  connection: { state: "disconnected", nodeId: null, message: null },
+  manualNodes: [],
+  subscriptions: [],
+  selectedNodeId: null,
+  settings: defaultSettings,
+  version: "",
+  traffic: null,
+  testing: { running: false, done: 0, total: 0 },
   importPreview: null,
   toasts: [],
 
   init: async () => {
     await onConnectionState((connection) => {
       set({ connection });
+      if (connection.state !== "connected") {
+        set({ traffic: null });
+      }
       if (connection.state === "error" && connection.message) {
         get().toast("error", connection.message);
       }
     });
+    await onTraffic((traffic) => set({ traffic }));
+    await onLatencyResult(({ nodeId, latencyMs }) => {
+      set((s) => ({
+        manualNodes: patchLatency(s.manualNodes, nodeId, latencyMs),
+        subscriptions: s.subscriptions.map((sub) => ({
+          ...sub,
+          nodes: patchLatency(sub.nodes, nodeId, latencyMs),
+        })),
+      }));
+    });
+    await onTestProgress((testing) => set({ testing }));
+    await onSubsChanged(() => void get().refresh());
+    await get().refresh();
+    set({ ready: true });
+  },
+
+  refresh: async () => {
     const snap: AppSnapshot = await ipc.getSnapshot();
     set({
-      ready: true,
       connection: snap.connection,
-      nodes: snap.nodes,
+      manualNodes: snap.manualNodes,
+      subscriptions: snap.subscriptions,
       selectedNodeId: snap.selectedNodeId,
-      mode: snap.mode,
-      localPort: snap.localPort,
+      settings: snap.settings,
+      version: snap.version,
     });
   },
+
+  setScreen: (screen) => set({ screen }),
 
   toast: (kind, text) => {
     const id = ++toastSeq;
     set((s) => ({ toasts: [...s.toasts, { id, kind, text }] }));
-    setTimeout(() => get().dismissToast(id), 4000);
+    setTimeout(() => get().dismissToast(id), 4500);
   },
 
   dismissToast: (id) =>
@@ -102,36 +178,117 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   commitImport: async () => {
     try {
-      const nodes = await ipc.commitClipboardImport();
-      const first = nodes[0];
-      set((s) => ({
-        importPreview: null,
-        nodes,
-        selectedNodeId: s.selectedNodeId ?? (first ? first.id : null),
-      }));
-      get().toast("info", "Server imported.");
+      await ipc.commitClipboardImport();
+      set({ importPreview: null });
+      await get().refresh();
+      get().toast("info", "Imported.");
+    } catch (e) {
+      get().toast("error", errorText(e));
+    }
+  },
+
+  addSubscription: async (name, url) => {
+    try {
+      await ipc.addSubscription(name, url);
+      await get().refresh();
+      get().toast("info", "Subscription added.");
+      return true;
+    } catch (e) {
+      await get().refresh(); // sub may exist with lastError set
+      get().toast("error", errorText(e));
+      return false;
+    }
+  },
+
+  updateSubscription: async (id) => {
+    try {
+      const count = await ipc.updateSubscription(id);
+      get().toast("info", `Updated — ${count} servers.`);
+    } catch (e) {
+      get().toast("error", errorText(e));
+    }
+    await get().refresh();
+  },
+
+  deleteSubscription: async (id) => {
+    try {
+      await ipc.deleteSubscription(id);
+      await get().refresh();
+    } catch (e) {
+      get().toast("error", errorText(e));
+    }
+  },
+
+  setSubAutoUpdate: async (id, interval) => {
+    try {
+      await ipc.setSubAutoUpdate(id, interval);
+      await get().refresh();
     } catch (e) {
       get().toast("error", errorText(e));
     }
   },
 
   selectNode: async (id) => {
-    await ipc.selectNode(id);
-    set({ selectedNodeId: id });
+    try {
+      await ipc.selectNode(id);
+      set({ selectedNodeId: id });
+    } catch (e) {
+      get().toast("error", errorText(e));
+    }
   },
 
   deleteNode: async (id) => {
-    await ipc.deleteNode(id);
-    set((s) => ({
-      nodes: s.nodes.filter((n) => n.id !== id),
-      selectedNodeId: s.selectedNodeId === id ? null : s.selectedNodeId,
-    }));
+    try {
+      await ipc.deleteNode(id);
+      await get().refresh();
+    } catch (e) {
+      get().toast("error", errorText(e));
+    }
   },
 
-  setMode: async (mode) => {
+  toggleFavorite: async (id) => {
     try {
-      await ipc.setMode(mode);
-      set({ mode });
+      await ipc.toggleFavorite(id);
+      await get().refresh();
+    } catch (e) {
+      get().toast("error", errorText(e));
+    }
+  },
+
+  copyNodeLink: async (id) => {
+    try {
+      await ipc.copyNodeLink(id);
+      get().toast("info", "Link copied.");
+    } catch (e) {
+      get().toast("error", errorText(e));
+    }
+  },
+
+  testAll: async () => {
+    try {
+      await ipc.testNodes(null);
+    } catch (e) {
+      get().toast("error", errorText(e));
+    }
+  },
+
+  testOne: async (id) => {
+    try {
+      await ipc.testNodes([id]);
+    } catch (e) {
+      get().toast("error", errorText(e));
+    }
+  },
+
+  cancelTest: async () => {
+    await ipc.cancelTest();
+  },
+
+  saveSettings: async (settings) => {
+    try {
+      await ipc.setSettings(settings);
+      set({ settings });
+      get().toast("info", "Settings saved.");
     } catch (e) {
       get().toast("error", errorText(e));
     }
@@ -150,3 +307,15 @@ export const useAppStore = create<AppStore>((set, get) => ({
     }
   },
 }));
+
+/** All nodes across manual + subscriptions, for lookups. */
+export function findNode(store: AppStore, id: string | null): NodeView | null {
+  if (!id) return null;
+  const manual = store.manualNodes.find((n) => n.id === id);
+  if (manual) return manual;
+  for (const sub of store.subscriptions) {
+    const hit = sub.nodes.find((n) => n.id === id);
+    if (hit) return hit;
+  }
+  return null;
+}

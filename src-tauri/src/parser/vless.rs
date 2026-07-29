@@ -1,11 +1,12 @@
-use std::collections::HashMap;
-
-use percent_encoding::percent_decode_str;
 use url::Url;
 use uuid::Uuid;
 
+use super::common::{
+    build_tls, build_transport, fragment_name, host_port, pct_decode, query_map,
+    reality_transport_ok,
+};
 use super::ParseError;
-use crate::model::{Node, Protocol, ProtocolParams, TlsConfig, Transport};
+use crate::model::{Node, Protocol, ProtocolParams};
 
 /// vless://<uuid>@<host>:<port>?<query>#<name>
 /// REALITY params: security=reality, pbk, sid, fp, sni, flow, spx.
@@ -17,122 +18,41 @@ pub fn parse(uri: &str) -> Result<Node, ParseError> {
         if raw.is_empty() {
             return Err(ParseError::new("vless link is missing the user id"));
         }
-        let decoded = percent_decode_str(raw)
-            .decode_utf8()
-            .map_err(|_| ParseError::new("vless user id isn't valid text"))?;
+        let decoded = pct_decode(raw)?;
         Uuid::parse_str(&decoded)
             .map_err(|_| ParseError::new("vless user id isn't a valid UUID"))?
             .to_string()
     };
 
-    let server = url
-        .host_str()
-        .ok_or_else(|| ParseError::new("vless link is missing the server address"))?
-        .trim_matches(['[', ']'])
-        .to_string();
-    let port = url
-        .port()
-        .ok_or_else(|| ParseError::new("vless link is missing the port"))?;
-
-    let query: HashMap<String, String> = url
-        .query_pairs()
-        .map(|(k, v)| (k.to_ascii_lowercase(), v.into_owned()))
-        .collect();
-    let get = |key: &str| query.get(key).filter(|v| !v.is_empty()).cloned();
-
+    let (server, port) = host_port(&url, "vless")?;
+    let query = query_map(&url);
     let transport = build_transport(&query)?;
-    let tls = build_tls(&query, &server)?;
-
-    if matches!(tls, TlsConfig::Reality { .. }) && !matches!(transport, Transport::Tcp | Transport::Grpc { .. } | Transport::H2 { .. }) {
+    let tls = build_tls(&query, &server, false)?;
+    if !reality_transport_ok(&tls, &transport) {
         return Err(ParseError::new(
             "REALITY only works with tcp, grpc, or h2 transports",
         ));
     }
 
-    let name = url
-        .fragment()
-        .and_then(|f| percent_decode_str(f).decode_utf8().ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| format!("{server}:{port}"));
-
     Ok(Node {
         id: Uuid::new_v4(),
-        name,
+        name: fragment_name(&url, format!("{server}:{port}")),
         protocol: Protocol::Vless,
         server,
         port,
         params: ProtocolParams::Vless {
             uuid: user_uuid,
-            flow: get("flow"),
+            flow: query.get("flow").filter(|v| !v.is_empty()).cloned(),
         },
         transport,
         tls,
     })
 }
 
-fn build_transport(query: &HashMap<String, String>) -> Result<Transport, ParseError> {
-    let get = |key: &str| query.get(key).filter(|v| !v.is_empty()).cloned();
-    let kind = get("type").unwrap_or_else(|| "tcp".into()).to_ascii_lowercase();
-    let path = get("path").unwrap_or_else(|| "/".into());
-    let host = get("host");
-    Ok(match kind.as_str() {
-        "tcp" | "raw" | "none" => Transport::Tcp,
-        "ws" => Transport::Ws { path, host },
-        "grpc" => Transport::Grpc {
-            service_name: get("servicename").unwrap_or_default(),
-        },
-        "httpupgrade" => Transport::HttpUpgrade { path, host },
-        "xhttp" | "splithttp" => Transport::Xhttp { path, host },
-        "h2" | "http" => Transport::H2 { path, host },
-        other => {
-            return Err(ParseError::new(format!(
-                "unsupported transport \"{other}\""
-            )))
-        }
-    })
-}
-
-fn build_tls(
-    query: &HashMap<String, String>,
-    server: &str,
-) -> Result<TlsConfig, ParseError> {
-    let get = |key: &str| query.get(key).filter(|v| !v.is_empty()).cloned();
-    let security = get("security")
-        .unwrap_or_else(|| "none".into())
-        .to_ascii_lowercase();
-    Ok(match security.as_str() {
-        "none" => TlsConfig::None,
-        "tls" => TlsConfig::Tls {
-            sni: get("sni").or_else(|| Some(server.to_string())),
-            alpn: get("alpn")
-                .map(|a| a.split(',').map(|s| s.trim().to_string()).collect())
-                .unwrap_or_default(),
-            fingerprint: get("fp"),
-            insecure: matches!(
-                get("allowinsecure").or_else(|| get("insecure")).as_deref(),
-                Some("1") | Some("true")
-            ),
-        },
-        "reality" => TlsConfig::Reality {
-            sni: get("sni"),
-            fingerprint: get("fp").unwrap_or_else(|| "chrome".into()),
-            public_key: get("pbk")
-                .ok_or_else(|| ParseError::new("REALITY link is missing pbk"))?,
-            short_id: get("sid"),
-            spider_x: get("spx"),
-        },
-        other => {
-            return Err(ParseError::new(format!(
-                "unsupported security \"{other}\""
-            )))
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{TlsConfig, Transport};
 
     const UUID: &str = "2f9a4b7c-1d2e-4f5a-8b9c-0d1e2f3a4b5c";
 
@@ -145,9 +65,13 @@ mod tests {
         assert_eq!(node.name, "DE Frankfurt 1");
         assert_eq!(node.server, "203.0.113.7");
         assert_eq!(node.port, 443);
-        let ProtocolParams::Vless { uuid, flow } = &node.params;
-        assert_eq!(uuid, UUID);
-        assert_eq!(flow.as_deref(), Some("xtls-rprx-vision"));
+        match &node.params {
+            ProtocolParams::Vless { uuid, flow } => {
+                assert_eq!(uuid, UUID);
+                assert_eq!(flow.as_deref(), Some("xtls-rprx-vision"));
+            }
+            other => panic!("wrong params {other:?}"),
+        }
         match &node.tls {
             TlsConfig::Reality {
                 sni,
@@ -221,13 +145,6 @@ mod tests {
     }
 
     #[test]
-    fn default_name_is_masked_free_endpoint() {
-        let uri = format!("vless://{UUID}@example.com:443?security=tls");
-        let node = parse(&uri).expect("should parse");
-        assert_eq!(node.name, "example.com:443");
-    }
-
-    #[test]
     fn rejects_missing_uuid() {
         assert!(parse("vless://@example.com:443").is_err());
     }
@@ -250,14 +167,13 @@ mod tests {
 
     #[test]
     fn rejects_reality_over_ws() {
-        let uri =
-            format!("vless://{UUID}@example.com:443?security=reality&pbk=k&type=ws");
+        let uri = format!("vless://{UUID}@example.com:443?security=reality&pbk=k&type=ws");
         assert!(parse(&uri).is_err());
     }
 
     #[test]
     fn error_messages_never_contain_the_uuid() {
-        let uri = format!("vless://{UUID}@example.com:443?security=reality"); // missing pbk
+        let uri = format!("vless://{UUID}@example.com:443?security=reality");
         let err = parse(&uri).expect_err("should fail");
         assert!(!err.reason.contains(UUID));
     }

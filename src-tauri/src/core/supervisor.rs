@@ -1,12 +1,13 @@
 //! Owns the sing-box lifecycle: spawn, health check, crash restarts (max 3,
-//! exponential backoff), and teardown. All state changes flow through here and
-//! are pushed to the WebView as `connection-state` events.
+//! exponential backoff), teardown, and the 1 Hz traffic pump while connected.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use futures_util::StreamExt;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpStream;
@@ -14,9 +15,10 @@ use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
+use crate::clash::{self, ClashEndpoint};
 use crate::config_gen::{self, GenInput};
 use crate::error::{redact, AppError};
-use crate::model::{ConnState, ConnectionEvent, Node, ProxyMode};
+use crate::model::{ConnState, ConnectionEvent, Node, ProxyMode, TrafficEvent};
 use crate::sysproxy;
 
 #[cfg(windows)]
@@ -26,7 +28,7 @@ const MAX_RESTARTS: u32 = 3;
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(6);
 const HEALTH_POLL: Duration = Duration::from_millis(150);
 #[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub fn can_connect(state: ConnState) -> bool {
     matches!(state, ConnState::Disconnected | ConnState::Error)
@@ -34,6 +36,15 @@ pub fn can_connect(state: ConnState) -> bool {
 
 pub fn can_disconnect(state: ConnState) -> bool {
     matches!(state, ConnState::Connected | ConnState::Connecting)
+}
+
+pub struct ConnectRequest {
+    pub nodes: Vec<Node>,
+    pub selected: Node,
+    pub mode: ProxyMode,
+    pub local_port: u16,
+    pub allow_lan: bool,
+    pub log_level: String,
 }
 
 pub struct Supervisor {
@@ -49,6 +60,8 @@ struct Inner {
     /// generation is still current, so a stale task can't clobber a new run.
     generation: u64,
     kill_tx: Option<oneshot::Sender<()>>,
+    /// clash_api endpoint of the RUNNING core; used by the latency tester.
+    run_info: Option<ClashEndpoint>,
 }
 
 fn lock(inner: &Mutex<Inner>) -> MutexGuard<'_, Inner> {
@@ -70,6 +83,7 @@ impl Supervisor {
                 node_id: None,
                 generation: 0,
                 kill_tx: None,
+                run_info: None,
             })),
             job: Arc::new(job),
         }
@@ -83,6 +97,7 @@ impl Supervisor {
                 node_id: None,
                 generation: 0,
                 kill_tx: None,
+                run_info: None,
             })),
         }
     }
@@ -92,13 +107,24 @@ impl Supervisor {
         (inner.state, inner.node_id)
     }
 
-    pub fn connect(
-        &self,
-        app: &AppHandle,
-        node: Node,
-        mode: ProxyMode,
-        local_port: u16,
-    ) -> Result<(), AppError> {
+    /// clash endpoint of the running core, if connected.
+    pub fn clash_endpoint(&self) -> Option<ClashEndpoint> {
+        lock(&self.inner).run_info.clone()
+    }
+
+    #[cfg(windows)]
+    pub fn assign_to_job(&self, child: &Child) {
+        if let Some(handle) = child.raw_handle() {
+            if let Err(err) = self.job.assign(handle as _) {
+                tracing::warn!("couldn't assign process to job object: {err}");
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub fn assign_to_job(&self, _child: &Child) {}
+
+    pub fn connect(&self, app: &AppHandle, request: ConnectRequest) -> Result<(), AppError> {
         let (kill_tx, kill_rx) = oneshot::channel();
         let generation;
         {
@@ -109,10 +135,14 @@ impl Supervisor {
             inner.generation += 1;
             generation = inner.generation;
             inner.state = ConnState::Connecting;
-            inner.node_id = Some(node.id);
+            inner.node_id = Some(request.selected.id);
             inner.kill_tx = Some(kill_tx);
+            inner.run_info = None;
         }
-        emit(app, ConnectionEvent::new(ConnState::Connecting, Some(node.id)));
+        emit(
+            app,
+            ConnectionEvent::new(ConnState::Connecting, Some(request.selected.id)),
+        );
 
         let inner = Arc::clone(&self.inner);
         #[cfg(windows)]
@@ -125,9 +155,7 @@ impl Supervisor {
                 #[cfg(windows)]
                 job,
                 generation,
-                node,
-                mode,
-                local_port,
+                request,
                 kill_rx,
             })
             .await;
@@ -144,6 +172,7 @@ impl Supervisor {
                 return;
             }
             inner.state = ConnState::Disconnecting;
+            inner.run_info = None;
             (inner.kill_tx.take(), inner.node_id)
         };
         emit(app, ConnectionEvent::new(ConnState::Disconnecting, node_id));
@@ -159,9 +188,7 @@ struct RunCtx {
     #[cfg(windows)]
     job: Arc<JobObject>,
     generation: u64,
-    node: Node,
-    mode: ProxyMode,
-    local_port: u16,
+    request: ConnectRequest,
     kill_rx: oneshot::Receiver<()>,
 }
 
@@ -178,14 +205,12 @@ async fn run_connection(ctx: RunCtx) {
         #[cfg(windows)]
         job,
         generation,
-        node,
-        mode,
-        local_port,
+        request,
         mut kill_rx,
     } = ctx;
-    let node_id = node.id;
+    let node_id = request.selected.id;
 
-    let (config_path, clash_port) = match prepare(&app, &node, local_port).await {
+    let prep = match prepare(&app, &request).await {
         Ok(prep) => prep,
         Err(err) => {
             finish_error(&app, &inner, generation, node_id, err.to_string());
@@ -194,11 +219,13 @@ async fn run_connection(ctx: RunCtx) {
     };
 
     let stderr_ring: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
+    let totals = Arc::new(TrafficTotals::default());
+    let session_start = tokio::time::Instant::now();
     let mut proxy_set = false;
     let mut attempt: u32 = 0;
 
     loop {
-        let mut child = match spawn_core(&config_path, &stderr_ring) {
+        let mut child = match spawn_core(&prep.config_path, &stderr_ring) {
             Ok(child) => child,
             Err(err) => {
                 teardown_proxy(&app, proxy_set);
@@ -213,7 +240,7 @@ async fn run_connection(ctx: RunCtx) {
             }
         }
 
-        match health_check(&mut child, clash_port, &mut kill_rx).await {
+        match health_check(&mut child, prep.endpoint.port, &mut kill_rx).await {
             Health::Killed => {
                 let _ = child.kill().await;
                 finish_disconnect(&app, &inner, generation, node_id, proxy_set);
@@ -240,8 +267,8 @@ async fn run_connection(ctx: RunCtx) {
             Health::Up => {}
         }
 
-        if mode == ProxyMode::SystemProxy && !proxy_set {
-            match enable_proxy(&app, local_port) {
+        if request.mode == ProxyMode::SystemProxy && !proxy_set {
+            match enable_proxy(&app, request.local_port) {
                 Ok(()) => proxy_set = true,
                 Err(err) => {
                     let _ = child.kill().await;
@@ -251,28 +278,56 @@ async fn run_connection(ctx: RunCtx) {
             }
         }
 
-        if !set_state_if_current(&inner, generation, ConnState::Connected) {
+        let still_current = {
+            let mut guard = lock(&inner);
+            if guard.generation == generation {
+                guard.state = ConnState::Connected;
+                guard.run_info = Some(prep.endpoint.clone());
+                true
+            } else {
+                false
+            }
+        };
+        if !still_current {
             let _ = child.kill().await;
             return;
         }
         emit(&app, ConnectionEvent::new(ConnState::Connected, Some(node_id)));
 
+        let stats_task = tauri::async_runtime::spawn(stats_pump(
+            app.clone(),
+            prep.endpoint.clone(),
+            Arc::clone(&totals),
+            session_start,
+        ));
+
         tokio::select! {
             _ = &mut kill_rx => {
+                stats_task.abort();
                 let _ = child.kill().await;
                 finish_disconnect(&app, &inner, generation, node_id, proxy_set);
                 return;
             }
             status = child.wait() => {
+                stats_task.abort();
                 let code = status.ok().and_then(|s| s.code());
                 tracing::warn!("core exited unexpectedly (code {code:?})");
                 if attempt < MAX_RESTARTS {
                     attempt += 1;
-                    if set_state_if_current(&inner, generation, ConnState::Connecting) {
-                        emit(&app, ConnectionEvent::new(ConnState::Connecting, Some(node_id)));
-                    } else {
+                    let still_current = {
+                        let mut guard = lock(&inner);
+                        if guard.generation == generation {
+                            guard.state = ConnState::Connecting;
+                            guard.run_info = None;
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if !still_current {
                         return;
                     }
+                    emit(&app, ConnectionEvent::new(ConnState::Connecting, Some(node_id)));
                     tokio::time::sleep(backoff(attempt)).await;
                     continue;
                 }
@@ -291,33 +346,103 @@ async fn run_connection(ctx: RunCtx) {
     }
 }
 
+#[derive(Default)]
+struct TrafficTotals {
+    up: AtomicU64,
+    down: AtomicU64,
+}
+
+/// Reads the clash /traffic chunked stream (one JSON object per second) and
+/// re-emits it as a `traffic` event — the 1 Hz push the UI listens to.
+async fn stats_pump(
+    app: AppHandle,
+    endpoint: ClashEndpoint,
+    totals: Arc<TrafficTotals>,
+    session_start: tokio::time::Instant,
+) {
+    let client = clash::local_client();
+    let url = format!("http://127.0.0.1:{}/traffic", endpoint.port);
+    let response = match client.get(&url).bearer_auth(&endpoint.secret).send().await {
+        Ok(r) if r.status().is_success() => r,
+        Ok(r) => {
+            tracing::warn!("traffic stream rejected: {}", r.status());
+            return;
+        }
+        Err(err) => {
+            tracing::warn!("traffic stream failed: {err}");
+            return;
+        }
+    };
+    let mut stream = response.bytes_stream();
+    let mut buffer = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let Ok(chunk) = chunk else { break };
+        buffer.extend_from_slice(&chunk);
+        while let Some(pos) = buffer.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = buffer.drain(..=pos).collect();
+            if let Ok(sample) = serde_json::from_slice::<clash::TrafficSample>(&line) {
+                let up_total = totals.up.fetch_add(sample.up, Ordering::Relaxed) + sample.up;
+                let down_total =
+                    totals.down.fetch_add(sample.down, Ordering::Relaxed) + sample.down;
+                let event = TrafficEvent {
+                    up_bps: sample.up,
+                    down_bps: sample.down,
+                    up_total,
+                    down_total,
+                    seconds: session_start.elapsed().as_secs(),
+                };
+                if let Err(err) = app.emit("traffic", event) {
+                    tracing::warn!("couldn't emit traffic: {err}");
+                }
+            }
+        }
+    }
+}
+
 fn backoff(attempt: u32) -> Duration {
     Duration::from_millis(500u64.saturating_mul(1 << attempt.min(4)))
 }
 
-async fn prepare(
-    app: &AppHandle,
-    node: &Node,
-    local_port: u16,
-) -> Result<(PathBuf, u16), AppError> {
+struct Prepared {
+    config_path: PathBuf,
+    endpoint: ClashEndpoint,
+}
+
+async fn prepare(app: &AppHandle, request: &ConnectRequest) -> Result<Prepared, AppError> {
     let data_dir = data_dir(app)?;
     let clash_port = pick_free_port()?;
     let secret = random_secret()?;
+    let selected_tag = request.selected.tag();
     let config = config_gen::generate(&GenInput {
-        node,
-        local_port,
+        nodes: &request.nodes,
+        selected_tag: &selected_tag,
+        local_port: Some(request.local_port),
+        allow_lan: request.allow_lan,
         clash_port,
         clash_secret: &secret,
+        log_level: &request.log_level,
     })?;
     let config_path = data_dir.join("run-config.json");
-    let json = serde_json::to_vec_pretty(&config)
-        .map_err(|e| AppError::Config(e.to_string()))?;
-    std::fs::write(&config_path, json).map_err(|e| AppError::Config(e.to_string()))?;
+    write_and_check(&config, &config_path).await?;
+    Ok(Prepared {
+        config_path,
+        endpoint: ClashEndpoint {
+            port: clash_port,
+            secret,
+        },
+    })
+}
 
-    // Validate before spawning; a rejected config is a clean, early error.
+/// Write a generated config and validate it with `sing-box check`.
+pub async fn write_and_check(
+    config: &serde_json::Value,
+    path: &PathBuf,
+) -> Result<(), AppError> {
+    let json = serde_json::to_vec_pretty(config).map_err(|e| AppError::Config(e.to_string()))?;
+    std::fs::write(path, json).map_err(|e| AppError::Config(e.to_string()))?;
     let bin = sidecar_path()?;
     let mut cmd = Command::new(&bin);
-    cmd.arg("check").arg("-c").arg(&config_path);
+    cmd.arg("check").arg("-c").arg(path);
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
     let output = cmd
@@ -332,10 +457,10 @@ async fn prepare(
             redact(line)
         )));
     }
-    Ok((config_path, clash_port))
+    Ok(())
 }
 
-fn spawn_core(
+pub fn spawn_core(
     config_path: &PathBuf,
     stderr_ring: &Arc<Mutex<VecDeque<String>>>,
 ) -> Result<Child, AppError> {
@@ -406,9 +531,31 @@ async fn health_check(
     }
 }
 
+/// Wait (outside the supervisor) for a spawned core's clash port. Used by the
+/// latency tester's ephemeral instance.
+pub async fn wait_for_port(child: &mut Child, clash_port: u16) -> bool {
+    let deadline = tokio::time::Instant::now() + HEALTH_TIMEOUT;
+    loop {
+        if let Ok(Some(_)) = child.try_wait() {
+            return false;
+        }
+        if TcpStream::connect(("127.0.0.1", clash_port)).await.is_ok() {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(HEALTH_POLL).await;
+    }
+}
+
 fn last_core_error(ring: &Arc<Mutex<VecDeque<String>>>) -> String {
     let ring = ring.lock().unwrap_or_else(|p| p.into_inner());
-    match ring.iter().rev().find(|l| l.contains("ERROR") || l.contains("FATAL")) {
+    match ring
+        .iter()
+        .rev()
+        .find(|l| l.contains("ERROR") || l.contains("FATAL"))
+    {
         Some(line) => format!(" ({})", line.trim()),
         None => String::new(),
     }
@@ -420,6 +567,7 @@ fn set_state_if_current(inner: &Mutex<Inner>, generation: u64, state: ConnState)
         return false;
     }
     inner.state = state;
+    inner.run_info = None;
     true
 }
 
@@ -481,7 +629,7 @@ pub fn data_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
 
 /// The bundled sidecar sits next to our executable (Tauri strips the target
 /// triple suffix at bundle/dev time).
-fn sidecar_path() -> Result<PathBuf, AppError> {
+pub fn sidecar_path() -> Result<PathBuf, AppError> {
     let exe = std::env::current_exe()
         .map_err(|e| AppError::Core(format!("couldn't locate the app: {e}")))?;
     let dir = exe
@@ -497,7 +645,7 @@ fn sidecar_path() -> Result<PathBuf, AppError> {
     Ok(path)
 }
 
-fn pick_free_port() -> Result<u16, AppError> {
+pub fn pick_free_port() -> Result<u16, AppError> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")
         .map_err(|e| AppError::Core(format!("no free local port: {e}")))?;
     let port = listener
@@ -507,7 +655,7 @@ fn pick_free_port() -> Result<u16, AppError> {
     Ok(port)
 }
 
-fn random_secret() -> Result<String, AppError> {
+pub fn random_secret() -> Result<String, AppError> {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes)
         .map_err(|e| AppError::Core(format!("no randomness source: {e}")))?;
@@ -549,11 +697,28 @@ mod tests {
             node_id: None,
             generation: 5,
             kill_tx: None,
+            run_info: None,
         });
         assert!(!set_state_if_current(&inner, 4, ConnState::Error));
         assert_eq!(lock(&inner).state, ConnState::Connected);
         assert!(set_state_if_current(&inner, 5, ConnState::Disconnected));
         assert_eq!(lock(&inner).state, ConnState::Disconnected);
+    }
+
+    #[test]
+    fn finishing_clears_run_info() {
+        let inner = Mutex::new(Inner {
+            state: ConnState::Connected,
+            node_id: None,
+            generation: 1,
+            kill_tx: None,
+            run_info: Some(ClashEndpoint {
+                port: 1234,
+                secret: "s".into(),
+            }),
+        });
+        assert!(set_state_if_current(&inner, 1, ConnState::Disconnected));
+        assert!(lock(&inner).run_info.is_none());
     }
 
     #[test]

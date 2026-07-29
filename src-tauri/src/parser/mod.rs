@@ -1,4 +1,12 @@
+pub mod common;
+mod hysteria2;
+mod shadowsocks;
+pub mod subscription;
+mod trojan;
+mod tuic;
 mod vless;
+mod vmess;
+mod wireguard;
 
 use crate::model::Node;
 
@@ -17,19 +25,28 @@ impl ParseError {
     }
 }
 
-/// Parse one share URI. Phase 1 supports vless:// (incl. REALITY); the other
-/// schemes land in Phase 2 behind this same entry point.
+/// Parse one share URI, any supported scheme.
 pub fn parse_uri(uri: &str) -> Result<Node, ParseError> {
     let trimmed = uri.trim();
     if trimmed.is_empty() {
         return Err(ParseError::new("empty line"));
     }
-    let scheme = trimmed.split("://").next().unwrap_or("").to_ascii_lowercase();
+    let scheme = trimmed
+        .split("://")
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
     match scheme.as_str() {
         "vless" => vless::parse(trimmed),
+        "vmess" => vmess::parse(trimmed),
+        "trojan" => trojan::parse(trimmed),
+        "ss" => shadowsocks::parse(trimmed),
+        "hysteria2" | "hy2" => hysteria2::parse(trimmed),
+        "tuic" => tuic::parse(trimmed),
+        "wireguard" | "wg" => wireguard::parse(trimmed),
         "" => Err(ParseError::new("not a server link")),
         other => Err(ParseError::new(format!(
-            "{other}:// links aren't supported yet"
+            "{other}:// links aren't supported"
         ))),
     }
 }
@@ -39,9 +56,24 @@ pub struct ParsedBatch {
     pub skipped: usize,
 }
 
-/// Parse clipboard-style text: one or more URIs separated by newlines.
-/// Malformed lines are counted, never fatal.
+/// Parse clipboard/subscription-style text: URIs separated by newlines, or a
+/// single base64 blob wrapping such a list. Malformed lines are counted,
+/// never fatal.
 pub fn parse_text(text: &str) -> ParsedBatch {
+    let trimmed = text.trim();
+    // A pasted base64 subscription payload has no scheme; try decoding it.
+    if !trimmed.contains("://") {
+        if let Some(decoded) = common::lenient_b64(trimmed)
+            .and_then(|b| String::from_utf8(b).ok())
+            .filter(|s| s.contains("://"))
+        {
+            return parse_lines(&decoded);
+        }
+    }
+    parse_lines(trimmed)
+}
+
+fn parse_lines(text: &str) -> ParsedBatch {
     let mut nodes = Vec::new();
     let mut skipped = 0usize;
     for line in text.lines() {
@@ -53,7 +85,7 @@ pub fn parse_text(text: &str) -> ParsedBatch {
             Ok(node) => nodes.push(node),
             Err(err) => {
                 skipped += 1;
-                tracing::debug!("skipped clipboard line: {}", err.reason);
+                tracing::debug!("skipped line: {}", err.reason);
             }
         }
     }
@@ -63,10 +95,25 @@ pub fn parse_text(text: &str) -> ParsedBatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+
+    #[test]
+    fn all_schemes_dispatch() {
+        let uris = [
+            "vless://2f9a4b7c-1d2e-4f5a-8b9c-0d1e2f3a4b5c@a.example.com:443?security=tls#1",
+            "trojan://pw@b.example.com:443#2",
+            "hy2://pw@c.example.com:443#3",
+            "tuic://2f9a4b7c-1d2e-4f5a-8b9c-0d1e2f3a4b5c:pw@d.example.com:443#4",
+        ];
+        for uri in uris {
+            assert!(parse_uri(uri).is_ok(), "failed: {uri}");
+        }
+    }
 
     #[test]
     fn unknown_scheme_is_skipped_not_fatal() {
-        let batch = parse_text("trojan://secret@host:443#name\n");
+        let batch = parse_text("socks5://user@host:1080#name\n");
         assert_eq!(batch.nodes.len(), 0);
         assert_eq!(batch.skipped, 1);
     }
@@ -76,6 +123,10 @@ mod tests {
         for garbage in [
             "",
             "vless://",
+            "vmess://",
+            "ss://",
+            "tuic://",
+            "wireguard://",
             "vless://@:",
             "http://example.com",
             "just some words",
@@ -87,12 +138,21 @@ mod tests {
     }
 
     #[test]
+    fn base64_blob_of_uris_is_decoded() {
+        let list = "trojan://pw@x.example.com:443#a\nhy2://pw@y.example.com:443#b\n";
+        let blob = STANDARD.encode(list);
+        let batch = parse_text(&blob);
+        assert_eq!(batch.nodes.len(), 2);
+        assert_eq!(batch.skipped, 0);
+    }
+
+    #[test]
     fn mixed_batch_counts_correctly() {
         let text = "\
 vless://2f9a4b7c-1d2e-4f5a-8b9c-0d1e2f3a4b5c@example.com:443?security=tls#ok
 
 not-a-link
-vless://2f9a4b7c-1d2e-4f5a-8b9c-0d1e2f3a4b5c@other.net:8443?security=none#ok2
+trojan://pw@other.net:8443#ok2
 ";
         let batch = parse_text(text);
         assert_eq!(batch.nodes.len(), 2);

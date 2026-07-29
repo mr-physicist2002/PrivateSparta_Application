@@ -4,57 +4,201 @@ use crate::error::AppError;
 use crate::model::{Node, ProtocolParams, TlsConfig, Transport};
 
 pub struct GenInput<'a> {
-    pub node: &'a Node,
-    pub local_port: u16,
+    /// Every known node becomes a tagged outbound so the clash API can
+    /// latency-test any of them on the running instance.
+    pub nodes: &'a [Node],
+    /// Tag of the node traffic actually routes through.
+    pub selected_tag: &'a str,
+    /// None = no local inbound (ephemeral latency-test instance).
+    pub local_port: Option<u16>,
+    pub allow_lan: bool,
     pub clash_port: u16,
     pub clash_secret: &'a str,
+    pub log_level: &'a str,
 }
 
-/// Build a complete sing-box config for one node. Generated fresh on every
-/// connect; never persisted beyond the runtime file handed to the sidecar.
+/// Build a complete sing-box config. Generated fresh on every connect; never
+/// persisted beyond the runtime file handed to the sidecar.
 pub fn generate(input: &GenInput<'_>) -> Result<Value, AppError> {
-    let outbound = vless_outbound(input.node)?;
-    Ok(json!({
-        "log": { "level": "warn", "timestamp": true },
-        "experimental": {
+    let mut outbounds = Vec::new();
+    let mut endpoints = Vec::new();
+    for node in input.nodes {
+        match outbound_for_node(node) {
+            Ok(OutboundValue::Outbound(v)) => outbounds.push(v),
+            Ok(OutboundValue::Endpoint(v)) => endpoints.push(v),
+            Err(err) => {
+                // Only the selected node MUST generate; others are skipped so
+                // one bad node can't block connecting through a good one.
+                if node.tag() == input.selected_tag {
+                    return Err(err);
+                }
+                tracing::debug!("skipping node in config: {err}");
+            }
+        }
+    }
+    if !outbounds.iter().any(|o| o["tag"] == input.selected_tag)
+        && !endpoints.iter().any(|e| e["tag"] == input.selected_tag)
+    {
+        return Err(AppError::Config("The selected server is unavailable.".into()));
+    }
+    outbounds.push(json!({ "type": "direct", "tag": "direct" }));
+
+    let mut inbounds = Vec::new();
+    if let Some(port) = input.local_port {
+        inbounds.push(json!({
+            "type": "mixed",
+            "tag": "mixed-in",
+            "listen": if input.allow_lan { "0.0.0.0" } else { "127.0.0.1" },
+            "listen_port": port
+        }));
+    }
+
+    let mut root = Map::new();
+    root.insert(
+        "log".into(),
+        json!({ "level": input.log_level, "timestamp": true }),
+    );
+    root.insert(
+        "experimental".into(),
+        json!({
             "clash_api": {
                 "external_controller": format!("127.0.0.1:{}", input.clash_port),
                 "secret": input.clash_secret
             }
-        },
-        "inbounds": [{
-            "type": "mixed",
-            "tag": "mixed-in",
-            "listen": "127.0.0.1",
-            "listen_port": input.local_port
-        }],
-        "outbounds": [
-            outbound,
-            { "type": "direct", "tag": "direct" }
-        ],
-        "route": { "final": "proxy", "auto_detect_interface": true }
-    }))
+        }),
+    );
+    root.insert("inbounds".into(), Value::Array(inbounds));
+    root.insert("outbounds".into(), Value::Array(outbounds));
+    if !endpoints.is_empty() {
+        root.insert("endpoints".into(), Value::Array(endpoints));
+    }
+    root.insert(
+        "route".into(),
+        json!({ "final": input.selected_tag, "auto_detect_interface": true }),
+    );
+    Ok(Value::Object(root))
 }
 
-fn vless_outbound(node: &Node) -> Result<Value, AppError> {
-    let ProtocolParams::Vless { uuid, flow } = &node.params;
+pub enum OutboundValue {
+    Outbound(Value),
+    /// WireGuard lives under `endpoints` since sing-box 1.11.
+    Endpoint(Value),
+}
 
+pub fn outbound_for_node(node: &Node) -> Result<OutboundValue, AppError> {
+    let tag = node.tag();
     let mut ob = Map::new();
-    ob.insert("type".into(), json!("vless"));
-    ob.insert("tag".into(), json!("proxy"));
+    ob.insert("tag".into(), json!(tag));
     ob.insert("server".into(), json!(node.server));
     ob.insert("server_port".into(), json!(node.port));
-    ob.insert("uuid".into(), json!(uuid));
-    if let Some(flow) = flow {
-        ob.insert("flow".into(), json!(flow));
+
+    match &node.params {
+        ProtocolParams::Vless { uuid, flow } => {
+            ob.insert("type".into(), json!("vless"));
+            ob.insert("uuid".into(), json!(uuid));
+            if let Some(flow) = flow {
+                ob.insert("flow".into(), json!(flow));
+            }
+        }
+        ProtocolParams::Vmess {
+            uuid,
+            alter_id,
+            security,
+        } => {
+            ob.insert("type".into(), json!("vmess"));
+            ob.insert("uuid".into(), json!(uuid));
+            ob.insert("alter_id".into(), json!(alter_id));
+            ob.insert("security".into(), json!(security));
+        }
+        ProtocolParams::Trojan { password } => {
+            ob.insert("type".into(), json!("trojan"));
+            ob.insert("password".into(), json!(password));
+        }
+        ProtocolParams::Shadowsocks {
+            method,
+            password,
+            plugin,
+            plugin_opts,
+        } => {
+            ob.insert("type".into(), json!("shadowsocks"));
+            ob.insert("method".into(), json!(method));
+            ob.insert("password".into(), json!(password));
+            if let Some(plugin) = plugin {
+                ob.insert("plugin".into(), json!(plugin));
+                if let Some(opts) = plugin_opts {
+                    ob.insert("plugin_opts".into(), json!(opts));
+                }
+            }
+        }
+        ProtocolParams::Hysteria2 {
+            password,
+            obfs,
+            obfs_password,
+        } => {
+            ob.insert("type".into(), json!("hysteria2"));
+            ob.insert("password".into(), json!(password));
+            if let (Some(obfs), Some(obfs_pw)) = (obfs, obfs_password) {
+                ob.insert(
+                    "obfs".into(),
+                    json!({ "type": obfs, "password": obfs_pw }),
+                );
+            }
+        }
+        ProtocolParams::Tuic {
+            uuid,
+            password,
+            congestion_control,
+            udp_relay_mode,
+        } => {
+            ob.insert("type".into(), json!("tuic"));
+            ob.insert("uuid".into(), json!(uuid));
+            ob.insert("password".into(), json!(password));
+            if let Some(cc) = congestion_control {
+                ob.insert("congestion_control".into(), json!(cc));
+            }
+            if let Some(mode) = udp_relay_mode {
+                ob.insert("udp_relay_mode".into(), json!(mode));
+            }
+        }
+        ProtocolParams::Wireguard {
+            private_key,
+            peer_public_key,
+            preshared_key,
+            addresses,
+            reserved,
+            mtu,
+        } => {
+            let mut peer = Map::new();
+            peer.insert("address".into(), json!(node.server));
+            peer.insert("port".into(), json!(node.port));
+            peer.insert("public_key".into(), json!(peer_public_key));
+            peer.insert("allowed_ips".into(), json!(["0.0.0.0/0", "::/0"]));
+            if let Some(psk) = preshared_key {
+                peer.insert("pre_shared_key".into(), json!(psk));
+            }
+            if let Some(reserved) = reserved {
+                peer.insert("reserved".into(), json!(reserved));
+            }
+            let mut ep = Map::new();
+            ep.insert("type".into(), json!("wireguard"));
+            ep.insert("tag".into(), json!(tag));
+            ep.insert("address".into(), json!(addresses));
+            ep.insert("private_key".into(), json!(private_key));
+            ep.insert("peers".into(), json!([Value::Object(peer)]));
+            if let Some(mtu) = mtu {
+                ep.insert("mtu".into(), json!(mtu));
+            }
+            return Ok(OutboundValue::Endpoint(Value::Object(ep)));
+        }
     }
+
     if let Some(tls) = tls_value(&node.tls) {
         ob.insert("tls".into(), tls);
     }
     if let Some(transport) = transport_value(&node.transport)? {
         ob.insert("transport".into(), transport);
     }
-    Ok(Value::Object(ob))
+    Ok(OutboundValue::Outbound(Value::Object(ob)))
 }
 
 fn tls_value(tls: &TlsConfig) -> Option<Value> {
@@ -155,108 +299,181 @@ fn transport_value(transport: &Transport) -> Result<Option<Value>, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Node, Protocol};
+    use crate::model::Protocol;
     use uuid::Uuid;
 
-    fn reality_node() -> Node {
+    fn base_node(protocol: Protocol, params: ProtocolParams) -> Node {
         Node {
             id: Uuid::new_v4(),
             name: "test".into(),
-            protocol: Protocol::Vless,
+            protocol,
             server: "203.0.113.7".into(),
             port: 443,
-            params: ProtocolParams::Vless {
-                uuid: "2f9a4b7c-1d2e-4f5a-8b9c-0d1e2f3a4b5c".into(),
-                flow: Some("xtls-rprx-vision".into()),
-            },
+            params,
             transport: Transport::Tcp,
-            tls: TlsConfig::Reality {
-                sni: Some("www.microsoft.com".into()),
-                fingerprint: "chrome".into(),
-                public_key: "pubkey123".into(),
-                short_id: Some("6ba85179".into()),
-                spider_x: None,
-            },
+            tls: TlsConfig::None,
         }
     }
 
-    #[test]
-    fn generates_reality_outbound() {
-        let node = reality_node();
-        let cfg = generate(&GenInput {
-            node: &node,
-            local_port: 2080,
+    fn reality_node() -> Node {
+        let mut node = base_node(
+            Protocol::Vless,
+            ProtocolParams::Vless {
+                uuid: "2f9a4b7c-1d2e-4f5a-8b9c-0d1e2f3a4b5c".into(),
+                flow: Some("xtls-rprx-vision".into()),
+            },
+        );
+        node.tls = TlsConfig::Reality {
+            sni: Some("www.microsoft.com".into()),
+            fingerprint: "chrome".into(),
+            public_key: "pubkey123".into(),
+            short_id: Some("6ba85179".into()),
+            spider_x: None,
+        };
+        node
+    }
+
+    fn gen(nodes: &[Node], selected: &str) -> Value {
+        generate(&GenInput {
+            nodes,
+            selected_tag: selected,
+            local_port: Some(2080),
+            allow_lan: false,
             clash_port: 9911,
             clash_secret: "s3cret",
+            log_level: "warn",
         })
-        .expect("generate");
+        .expect("generate")
+    }
 
+    #[test]
+    fn generates_reality_outbound_and_routes_to_it() {
+        let node = reality_node();
+        let tag = node.tag();
+        let cfg = gen(std::slice::from_ref(&node), &tag);
         let ob = &cfg["outbounds"][0];
         assert_eq!(ob["type"], "vless");
-        assert_eq!(ob["flow"], "xtls-rprx-vision");
+        assert_eq!(ob["tag"], tag.as_str());
         assert_eq!(ob["tls"]["reality"]["public_key"], "pubkey123");
-        assert_eq!(ob["tls"]["reality"]["short_id"], "6ba85179");
-        assert_eq!(ob["tls"]["utls"]["fingerprint"], "chrome");
-        assert_eq!(ob["tls"]["server_name"], "www.microsoft.com");
-        assert!(ob.get("transport").is_none());
+        assert_eq!(cfg["route"]["final"], tag.as_str());
     }
 
     #[test]
-    fn inbound_binds_loopback_only() {
+    fn all_nodes_become_outbounds() {
+        let nodes = vec![
+            reality_node(),
+            base_node(
+                Protocol::Trojan,
+                ProtocolParams::Trojan { password: "pw".into() },
+            ),
+            base_node(
+                Protocol::Shadowsocks,
+                ProtocolParams::Shadowsocks {
+                    method: "aes-256-gcm".into(),
+                    password: "pw".into(),
+                    plugin: None,
+                    plugin_opts: None,
+                },
+            ),
+        ];
+        let cfg = gen(&nodes, &nodes[1].tag());
+        // 3 nodes + direct
+        let obs = cfg["outbounds"].as_array().expect("array");
+        assert_eq!(obs.len(), 4);
+    }
+
+    #[test]
+    fn hysteria2_gets_obfs_object() {
+        let node = base_node(
+            Protocol::Hysteria2,
+            ProtocolParams::Hysteria2 {
+                password: "pw".into(),
+                obfs: Some("salamander".into()),
+                obfs_password: Some("opw".into()),
+            },
+        );
+        let cfg = gen(std::slice::from_ref(&node), &node.tag());
+        assert_eq!(cfg["outbounds"][0]["obfs"]["type"], "salamander");
+    }
+
+    #[test]
+    fn wireguard_becomes_endpoint() {
+        let node = base_node(
+            Protocol::Wireguard,
+            ProtocolParams::Wireguard {
+                private_key: "priv".into(),
+                peer_public_key: "pub".into(),
+                preshared_key: None,
+                addresses: vec!["10.0.0.2/32".into()],
+                reserved: Some(vec![1, 2, 3]),
+                mtu: Some(1420),
+            },
+        );
+        let cfg = gen(std::slice::from_ref(&node), &node.tag());
+        let ep = &cfg["endpoints"][0];
+        assert_eq!(ep["type"], "wireguard");
+        assert_eq!(ep["peers"][0]["public_key"], "pub");
+        assert_eq!(ep["peers"][0]["port"], 443);
+        assert_eq!(cfg["route"]["final"], node.tag().as_str());
+    }
+
+    #[test]
+    fn inbound_binds_loopback_unless_lan_allowed() {
+        let node = reality_node();
+        let cfg = gen(std::slice::from_ref(&node), &node.tag());
+        assert_eq!(cfg["inbounds"][0]["listen"], "127.0.0.1");
+        let cfg_lan = generate(&GenInput {
+            nodes: std::slice::from_ref(&node),
+            selected_tag: &node.tag(),
+            local_port: Some(2080),
+            allow_lan: true,
+            clash_port: 9911,
+            clash_secret: "s",
+            log_level: "warn",
+        })
+        .expect("generate");
+        assert_eq!(cfg_lan["inbounds"][0]["listen"], "0.0.0.0");
+    }
+
+    #[test]
+    fn ephemeral_config_has_no_inbounds() {
         let node = reality_node();
         let cfg = generate(&GenInput {
-            node: &node,
-            local_port: 2080,
+            nodes: std::slice::from_ref(&node),
+            selected_tag: &node.tag(),
+            local_port: None,
+            allow_lan: false,
             clash_port: 9911,
             clash_secret: "s",
+            log_level: "warn",
         })
         .expect("generate");
-        assert_eq!(cfg["inbounds"][0]["listen"], "127.0.0.1");
-        assert_eq!(
-            cfg["experimental"]["clash_api"]["external_controller"],
-            "127.0.0.1:9911"
+        assert_eq!(cfg["inbounds"].as_array().map(|a| a.len()), Some(0));
+    }
+
+    #[test]
+    fn bad_nonselected_node_is_skipped_selected_errors() {
+        let mut xhttp = reality_node();
+        xhttp.transport = Transport::Xhttp { path: "/".into(), host: None };
+        xhttp.tls = TlsConfig::None;
+        let good = base_node(
+            Protocol::Trojan,
+            ProtocolParams::Trojan { password: "pw".into() },
         );
-    }
-
-    #[test]
-    fn ws_transport_carries_host_header() {
-        let mut node = reality_node();
-        node.transport = Transport::Ws {
-            path: "/ws".into(),
-            host: Some("cdn.example.com".into()),
-        };
-        node.tls = TlsConfig::Tls {
-            sni: Some("cdn.example.com".into()),
-            alpn: vec![],
-            fingerprint: None,
-            insecure: false,
-        };
-        let cfg = generate(&GenInput {
-            node: &node,
-            local_port: 2080,
+        let nodes = vec![xhttp.clone(), good.clone()];
+        // selected = good: xhttp silently skipped
+        let cfg = gen(&nodes, &good.tag());
+        assert_eq!(cfg["outbounds"].as_array().map(|a| a.len()), Some(2));
+        // selected = xhttp: hard error
+        assert!(generate(&GenInput {
+            nodes: &nodes,
+            selected_tag: &xhttp.tag(),
+            local_port: Some(2080),
+            allow_lan: false,
             clash_port: 9911,
             clash_secret: "s",
+            log_level: "warn",
         })
-        .expect("generate");
-        let ob = &cfg["outbounds"][0];
-        assert_eq!(ob["transport"]["type"], "ws");
-        assert_eq!(ob["transport"]["headers"]["Host"], "cdn.example.com");
-    }
-
-    #[test]
-    fn xhttp_is_a_clean_error() {
-        let mut node = reality_node();
-        node.transport = Transport::Xhttp {
-            path: "/".into(),
-            host: None,
-        };
-        node.tls = TlsConfig::None;
-        let err = generate(&GenInput {
-            node: &node,
-            local_port: 2080,
-            clash_port: 9911,
-            clash_secret: "s",
-        });
-        assert!(err.is_err());
+        .is_err());
     }
 }

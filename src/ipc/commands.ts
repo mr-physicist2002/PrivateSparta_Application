@@ -1,36 +1,43 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppSnapshot, ImportPreview, NodeView, ProxyMode } from "./types";
+import type {
+  AppSnapshot,
+  ImportPreview,
+  Settings,
+  UpdateInterval,
+} from "./types";
 
-export function getSnapshot(): Promise<AppSnapshot> {
-  return invoke<AppSnapshot>("get_snapshot");
-}
+export const getSnapshot = () => invoke<AppSnapshot>("get_snapshot");
 
 /** Reads the clipboard in Rust and returns a preview; nothing is stored yet. */
-export function previewClipboardImport(): Promise<ImportPreview> {
-  return invoke<ImportPreview>("preview_clipboard_import");
-}
+export const previewClipboardImport = () =>
+  invoke<ImportPreview>("preview_clipboard_import");
+export const commitClipboardImport = () => invoke<void>("commit_clipboard_import");
 
-/** Commits the nodes from the last preview to the store. */
-export function commitClipboardImport(): Promise<NodeView[]> {
-  return invoke<NodeView[]>("commit_clipboard_import");
-}
+export const addSubscription = (name: string, url: string) =>
+  invoke<void>("add_subscription", { name, url });
+export const updateSubscription = (subId: string) =>
+  invoke<number>("update_subscription", { subId });
+export const deleteSubscription = (subId: string) =>
+  invoke<void>("delete_subscription", { subId });
+export const setSubAutoUpdate = (subId: string, interval: UpdateInterval) =>
+  invoke<void>("set_sub_auto_update", { subId, interval });
+export const revealSubscriptionUrl = (subId: string) =>
+  invoke<string>("reveal_subscription_url", { subId });
 
-export function selectNode(nodeId: string): Promise<void> {
-  return invoke("select_node", { nodeId });
-}
+export const selectNode = (nodeId: string) => invoke<void>("select_node", { nodeId });
+export const deleteNode = (nodeId: string) => invoke<void>("delete_node", { nodeId });
+export const toggleFavorite = (nodeId: string) =>
+  invoke<boolean>("toggle_favorite", { nodeId });
+/** Rebuilds the share URI Rust-side and copies it; the URI never reaches JS. */
+export const copyNodeLink = (nodeId: string) =>
+  invoke<void>("copy_node_link", { nodeId });
 
-export function connect(): Promise<void> {
-  return invoke("connect");
-}
+export const testNodes = (nodeIds: string[] | null) =>
+  invoke<void>("test_nodes", { nodeIds });
+export const cancelTest = () => invoke<void>("cancel_test");
 
-export function disconnect(): Promise<void> {
-  return invoke("disconnect");
-}
+export const setSettings = (settings: Settings) =>
+  invoke<void>("set_settings", { settings });
 
-export function setMode(mode: ProxyMode): Promise<void> {
-  return invoke("set_mode", { mode });
-}
-
-export function deleteNode(nodeId: string): Promise<void> {
-  return invoke("delete_node", { nodeId });
-}
+export const connect = () => invoke<void>("connect");
+export const disconnect = () => invoke<void>("disconnect");
