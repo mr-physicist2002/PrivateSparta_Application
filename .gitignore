@@ -9,5 +9,7 @@ updater-key-password.txt
 # Bundled core: downloaded, not versioned. Version + SHA-256 pinned in README.
 src-tauri/binaries/
 *.local
-# Local editor/tooling state
+# Local editor / tooling state
 .claude/
+.vscode/
+.idea/
