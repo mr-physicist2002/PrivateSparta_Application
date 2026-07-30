@@ -10,6 +10,5 @@ updater-key-password.txt
 src-tauri/binaries/
 *.local
 # Local editor / tooling state
-.claude/
 .vscode/
 .idea/
