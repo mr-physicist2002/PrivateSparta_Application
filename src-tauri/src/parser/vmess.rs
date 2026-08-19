@@ -48,7 +48,11 @@ pub fn parse(uri: &str) -> Result<Node, ParseError> {
             service_name: if path == "/" { String::new() } else { path },
         },
         "httpupgrade" => Transport::HttpUpgrade { path, host },
-        "xhttp" | "splithttp" => Transport::Xhttp { path, host },
+        "xhttp" | "splithttp" => {
+            return Err(ParseError::new(
+                "xhttp transport isn't supported by the bundled tunnel core",
+            ))
+        }
         "h2" | "http" => Transport::H2 { path, host },
         other => return Err(ParseError::new(format!("unsupported transport \"{other}\""))),
     };

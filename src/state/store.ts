@@ -80,6 +80,8 @@ interface AppStore {
 }
 
 let toastSeq = 0;
+let settingsRevision = 0;
+let settingsSaveQueue: Promise<void> = Promise.resolve();
 
 function errorText(e: unknown): string {
   return typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
@@ -87,7 +89,7 @@ function errorText(e: unknown): string {
 
 const defaultSettings: Settings = {
   mode: "system-proxy",
-  localPort: 2080,
+  localPort: 12334,
   allowLan: false,
   logLevel: "warn",
   autostart: false,
@@ -186,7 +188,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         get().toast(
           "error",
           preview.skipped > 0
-            ? t("toastClipboardUnreadable")
+            ? preview.error ?? t("toastClipboardUnreadable")
             : t("toastClipboardNoLink"),
         );
         return;
@@ -308,11 +310,17 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   saveSettings: async (settings) => {
+    const previous = get().settings;
+    const revision = ++settingsRevision;
+    set({ settings });
+    const write = settingsSaveQueue.then(() => ipc.setSettings(settings));
+    // Keep later writes moving even if one invocation fails.
+    settingsSaveQueue = write.catch(() => undefined);
     try {
-      await ipc.setSettings(settings);
-      set({ settings });
+      await write;
       get().toast("info", t("toastSettingsSaved"));
     } catch (e) {
+      if (revision === settingsRevision) set({ settings: previous });
       get().toast("error", errorText(e));
     }
   },
@@ -362,7 +370,10 @@ export const useAppStore = create<AppStore>((set, get) => ({
 }));
 
 /** All nodes across manual + subscriptions, for lookups. */
-export function findNode(store: AppStore, id: string | null): NodeView | null {
+export function findNode(
+  store: Pick<AppStore, "manualNodes" | "subscriptions">,
+  id: string | null,
+): NodeView | null {
   if (!id) return null;
   const manual = store.manualNodes.find((n) => n.id === id);
   if (manual) return manual;

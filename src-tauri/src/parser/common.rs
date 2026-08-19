@@ -72,7 +72,15 @@ pub fn build_transport(query: &HashMap<String, String>) -> Result<Transport, Par
             service_name: get(query, "servicename").unwrap_or_default(),
         },
         "httpupgrade" => Transport::HttpUpgrade { path, host },
-        "xhttp" | "splithttp" => Transport::Xhttp { path, host },
+        // XHTTP/SplitHTTP is an Xray transport. Keep the model variant so old
+        // stores remain readable, but reject new imports until the bundled
+        // sing-box core actually supports it. Mapping it to HTTP/H2 would
+        // produce a valid-looking config that cannot connect to the server.
+        "xhttp" | "splithttp" => {
+            return Err(ParseError::new(
+                "xhttp transport isn't supported by the bundled tunnel core",
+            ))
+        }
         "h2" | "http" => Transport::H2 { path, host },
         other => {
             return Err(ParseError::new(format!(

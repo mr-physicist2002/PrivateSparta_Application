@@ -18,13 +18,15 @@ export function Rail() {
     <nav className="flex w-14 shrink-0 flex-col items-center gap-1 border-e border-border py-3">
       {ITEMS.map(({ screen: target, labelKey, Icon }) => (
         <button
+          type="button"
           key={target}
           aria-label={t(labelKey)}
+          aria-current={screen === target ? "page" : undefined}
           title={t(labelKey)}
           onClick={() => setScreen(target)}
           className={`flex size-10 items-center justify-center rounded-card transition-colors duration-[140ms] ${
             screen === target
-              ? "bg-accent-wash text-accent"
+              ? "bg-accent-wash text-accent ring-1 ring-inset ring-accent/20"
               : "text-text-muted hover:bg-bg-elevated hover:text-text-secondary"
           }`}
         >

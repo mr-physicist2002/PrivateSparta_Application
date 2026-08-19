@@ -53,6 +53,7 @@ pub struct AppSnapshot {
 pub struct ImportPreview {
     nodes: Vec<NodeView>,
     skipped: usize,
+    error: Option<String>,
 }
 
 fn node_view(state: &AppState, store: &ConfigStore, node: &Node) -> NodeView {
@@ -126,6 +127,7 @@ pub fn preview_clipboard_import(
     Ok(ImportPreview {
         nodes: views,
         skipped: batch.skipped,
+        error: batch.first_error,
     })
 }
 

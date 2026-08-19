@@ -27,22 +27,19 @@ interface Row {
 
 export function Servers() {
   const t = useT();
-  const store = useAppStore();
-  const {
-    manualNodes,
-    subscriptions,
-    selectedNodeId,
-    connection,
-    testing,
-    testAll,
-    testOne,
-    cancelTest,
-    selectNode,
-    deleteNode,
-    toggleFavorite,
-    copyNodeLink,
-    previewImport,
-  } = store;
+  const manualNodes = useAppStore((s) => s.manualNodes);
+  const subscriptions = useAppStore((s) => s.subscriptions);
+  const selectedNodeId = useAppStore((s) => s.selectedNodeId);
+  const connection = useAppStore((s) => s.connection);
+  const testing = useAppStore((s) => s.testing);
+  const testAll = useAppStore((s) => s.testAll);
+  const testOne = useAppStore((s) => s.testOne);
+  const cancelTest = useAppStore((s) => s.cancelTest);
+  const selectNode = useAppStore((s) => s.selectNode);
+  const deleteNode = useAppStore((s) => s.deleteNode);
+  const toggleFavorite = useAppStore((s) => s.toggleFavorite);
+  const copyNodeLink = useAppStore((s) => s.copyNodeLink);
+  const previewImport = useAppStore((s) => s.previewImport);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortKey>("added");
   const [protocolFilter, setProtocolFilter] = useState<string>("all");

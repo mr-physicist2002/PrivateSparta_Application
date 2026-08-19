@@ -83,6 +83,8 @@ export interface TestProgress {
 export interface ImportPreview {
   nodes: NodeView[];
   skipped: number;
+  /** Credential-safe backend reason when at least one entry was skipped. */
+  error: string | null;
 }
 
 export interface AppSnapshot {

@@ -172,6 +172,18 @@ mod tests {
     }
 
     #[test]
+    fn explains_that_xhttp_needs_a_different_core() {
+        let uri = format!(
+            "vless://{UUID}@example.com:443?security=reality&pbk=key&type=xhttp&path=%2F&mode=auto"
+        );
+        let err = parse(&uri).expect_err("xhttp must not be accepted by sing-box 1.13");
+        assert_eq!(
+            err.reason,
+            "xhttp transport isn't supported by the bundled tunnel core"
+        );
+    }
+
+    #[test]
     fn error_messages_never_contain_the_uuid() {
         let uri = format!("vless://{UUID}@example.com:443?security=reality");
         let err = parse(&uri).expect_err("should fail");

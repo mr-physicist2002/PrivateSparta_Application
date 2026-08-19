@@ -10,7 +10,7 @@ use crate::model::{Node, ProxyMode, Subscription, WindowState};
 pub const CURRENT_SCHEMA: u32 = 3;
 
 fn default_local_port() -> u16 {
-    2080
+    12334
 }
 fn default_log_level() -> String {
     "warn".into()
@@ -241,6 +241,7 @@ mod tests {
         ));
         assert_eq!(store.config.schema_version, CURRENT_SCHEMA);
         assert!(store.config.manual_nodes.is_empty());
+        assert_eq!(store.config.settings.local_port, 12334);
     }
 
     #[test]

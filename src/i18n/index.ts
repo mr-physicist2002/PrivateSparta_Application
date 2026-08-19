@@ -1,3 +1,4 @@
+import { useCallback } from "react";
 import { en } from "./en";
 import { fa } from "./fa";
 import { zh } from "./zh";
@@ -29,7 +30,7 @@ function normalize(lang: string): Language {
 /** Reactive translator — re-renders subscribers when the language changes. */
 export function useT(): (key: MessageKey) => string {
   const lang = useAppStore((s) => normalize(s.settings.language));
-  return (key) => DICTS[lang][key] ?? en[key] ?? key;
+  return useCallback((key: MessageKey) => DICTS[lang][key] ?? en[key] ?? key, [lang]);
 }
 
 /** Non-reactive lookup for code outside React components. */

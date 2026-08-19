@@ -58,10 +58,18 @@ fn parse_singbox_json(body: &str) -> ParsedBatch {
     let mut nodes = Vec::new();
     let mut skipped = 0usize;
     let Ok(json) = serde_json::from_str::<Json>(body) else {
-        return ParsedBatch { nodes, skipped: 1 };
+        return ParsedBatch {
+            nodes,
+            skipped: 1,
+            first_error: Some("invalid sing-box JSON subscription".into()),
+        };
     };
     let Some(outbounds) = json.get("outbounds").and_then(|o| o.as_array()) else {
-        return ParsedBatch { nodes, skipped: 1 };
+        return ParsedBatch {
+            nodes,
+            skipped: 1,
+            first_error: Some("sing-box subscription has no outbounds".into()),
+        };
     };
     for outbound in outbounds {
         match singbox_outbound_to_node(outbound) {
@@ -75,7 +83,11 @@ fn parse_singbox_json(body: &str) -> ParsedBatch {
             }
         }
     }
-    ParsedBatch { nodes, skipped }
+    ParsedBatch {
+        nodes,
+        skipped,
+        first_error: (skipped > 0).then(|| "some sing-box outbounds aren't supported".into()),
+    }
 }
 
 fn singbox_outbound_to_node(ob: &Json) -> Option<Node> {
@@ -217,10 +229,18 @@ fn parse_clash_yaml(body: &str) -> ParsedBatch {
     let mut nodes = Vec::new();
     let mut skipped = 0usize;
     let Ok(yaml) = serde_yaml::from_str::<Yaml>(body) else {
-        return ParsedBatch { nodes, skipped: 1 };
+        return ParsedBatch {
+            nodes,
+            skipped: 1,
+            first_error: Some("invalid Clash YAML subscription".into()),
+        };
     };
     let Some(proxies) = yaml.get("proxies").and_then(|p| p.as_sequence()) else {
-        return ParsedBatch { nodes, skipped: 1 };
+        return ParsedBatch {
+            nodes,
+            skipped: 1,
+            first_error: Some("Clash subscription has no proxies".into()),
+        };
     };
     for proxy in proxies {
         match clash_proxy_to_node(proxy) {
@@ -228,7 +248,11 @@ fn parse_clash_yaml(body: &str) -> ParsedBatch {
             None => skipped += 1,
         }
     }
-    ParsedBatch { nodes, skipped }
+    ParsedBatch {
+        nodes,
+        skipped,
+        first_error: (skipped > 0).then(|| "some Clash proxies aren't supported".into()),
+    }
 }
 
 fn yaml_str(value: &Yaml, key: &str) -> Option<String> {

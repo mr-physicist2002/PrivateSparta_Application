@@ -16,6 +16,7 @@ export function TitleBar() {
       </span>
       <div className="flex h-full">
         <button
+          type="button"
           aria-label="Minimize"
           onClick={() => void win.minimize()}
           className="flex h-full w-11 items-center justify-center text-text-muted transition-colors duration-[140ms] hover:bg-bg-elevated hover:text-text-primary"
@@ -23,6 +24,7 @@ export function TitleBar() {
           <Minus size={14} />
         </button>
         <button
+          type="button"
           aria-label="Close"
           onClick={() => void win.close()}
           className="flex h-full w-11 items-center justify-center text-text-muted transition-colors duration-[140ms] hover:bg-danger hover:text-text-primary"
