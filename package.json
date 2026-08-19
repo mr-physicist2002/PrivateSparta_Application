@@ -1,7 +1,7 @@
 {
   "name": "privatesparta",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Lightweight desktop client for the PrivateSparta VPN service",
   "author": "H. Talebi (https://github.com/mr-physicist2002)",
   "license": "MIT",

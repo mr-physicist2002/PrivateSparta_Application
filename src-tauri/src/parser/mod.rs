@@ -54,6 +54,9 @@ pub fn parse_uri(uri: &str) -> Result<Node, ParseError> {
 pub struct ParsedBatch {
     pub nodes: Vec<Node>,
     pub skipped: usize,
+    /// First credential-safe parser reason, used to explain an all-failed
+    /// clipboard import without ever returning the raw link to the WebView.
+    pub first_error: Option<String>,
 }
 
 /// Parse clipboard/subscription-style text: URIs separated by newlines, or a
@@ -76,6 +79,7 @@ pub fn parse_text(text: &str) -> ParsedBatch {
 fn parse_lines(text: &str) -> ParsedBatch {
     let mut nodes = Vec::new();
     let mut skipped = 0usize;
+    let mut first_error = None;
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -85,11 +89,18 @@ fn parse_lines(text: &str) -> ParsedBatch {
             Ok(node) => nodes.push(node),
             Err(err) => {
                 skipped += 1;
+                if first_error.is_none() {
+                    first_error = Some(err.reason.clone());
+                }
                 tracing::debug!("skipped line: {}", err.reason);
             }
         }
     }
-    ParsedBatch { nodes, skipped }
+    ParsedBatch {
+        nodes,
+        skipped,
+        first_error,
+    }
 }
 
 #[cfg(test)]
@@ -116,6 +127,10 @@ mod tests {
         let batch = parse_text("socks5://user@host:1080#name\n");
         assert_eq!(batch.nodes.len(), 0);
         assert_eq!(batch.skipped, 1);
+        assert_eq!(
+            batch.first_error.as_deref(),
+            Some("socks5:// links aren't supported")
+        );
     }
 
     #[test]
@@ -144,6 +159,7 @@ mod tests {
         let batch = parse_text(&blob);
         assert_eq!(batch.nodes.len(), 2);
         assert_eq!(batch.skipped, 0);
+        assert_eq!(batch.first_error, None);
     }
 
     #[test]
@@ -157,5 +173,22 @@ trojan://pw@other.net:8443#ok2
         let batch = parse_text(text);
         assert_eq!(batch.nodes.len(), 2);
         assert_eq!(batch.skipped, 1);
+        assert_eq!(
+            batch.first_error.as_deref(),
+            Some("not-a-link:// links aren't supported")
+        );
+    }
+
+    #[test]
+    fn all_failed_import_keeps_the_first_safe_reason() {
+        let text = "vless://2f9a4b7c-1d2e-4f5a-8b9c-0d1e2f3a4b5c@example.com:443?security=reality&pbk=key&type=xhttp\nnot-a-link";
+        let batch = parse_text(text);
+        assert!(batch.nodes.is_empty());
+        assert_eq!(batch.skipped, 2);
+        assert_eq!(
+            batch.first_error.as_deref(),
+            Some("xhttp transport isn't supported by the bundled tunnel core")
+        );
+        assert!(!batch.first_error.unwrap().contains("2f9a4b7c"));
     }
 }

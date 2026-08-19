@@ -151,7 +151,7 @@ Tag a version and CI builds and drafts a signed release for Windows, macOS
 (arm64 + x64), and Linux:
 
 ```bash
-git tag v0.1.0 && git push origin v0.1.0
+git tag v0.1.1 && git push origin v0.1.1
 ```
 
 Required repository secrets:

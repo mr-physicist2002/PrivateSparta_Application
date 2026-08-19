@@ -22,21 +22,19 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 export function Home() {
   const t = useT();
-  const store = useAppStore();
-  const {
-    connection,
-    traffic,
-    subscriptions,
-    selectedNodeId,
-    previewImport,
-    setScreen,
-  } = store;
-  const node = findNode(store, selectedNodeId);
+  const connection = useAppStore((s) => s.connection);
+  const traffic = useAppStore((s) => s.traffic);
+  const manualNodes = useAppStore((s) => s.manualNodes);
+  const subscriptions = useAppStore((s) => s.subscriptions);
+  const selectedNodeId = useAppStore((s) => s.selectedNodeId);
+  const previewImport = useAppStore((s) => s.previewImport);
+  const setScreen = useAppStore((s) => s.setScreen);
+  const node = findNode({ manualNodes, subscriptions }, selectedNodeId);
   const parentSub = subscriptions.find((s) =>
     s.nodes.some((n) => n.id === selectedNodeId),
   );
   const hasNodes =
-    store.manualNodes.length > 0 || subscriptions.some((s) => s.nodes.length > 0);
+    manualNodes.length > 0 || subscriptions.some((s) => s.nodes.length > 0);
 
   return (
     <main className="flex min-h-0 flex-1 flex-col items-center gap-6 overflow-y-auto px-8 py-8">

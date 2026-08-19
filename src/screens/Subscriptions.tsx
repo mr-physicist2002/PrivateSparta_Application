@@ -8,7 +8,7 @@ import { formatBytes, formatExpiry, formatRelative } from "../lib/format";
 
 export function Subscriptions() {
   const t = useT();
-  const { subscriptions } = useAppStore();
+  const subscriptions = useAppStore((s) => s.subscriptions);
   return (
     <main className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 py-5">
       <AddForm />
@@ -76,8 +76,11 @@ function AddForm() {
 
 function SubCard({ sub }: { sub: SubscriptionView }) {
   const t = useT();
-  const { updateSubscription, deleteSubscription, setSubAutoUpdate, connection, toast } =
-    useAppStore();
+  const updateSubscription = useAppStore((s) => s.updateSubscription);
+  const deleteSubscription = useAppStore((s) => s.deleteSubscription);
+  const setSubAutoUpdate = useAppStore((s) => s.setSubAutoUpdate);
+  const connection = useAppStore((s) => s.connection);
+  const toast = useAppStore((s) => s.toast);
   const INTERVALS: Array<{ value: UpdateInterval; label: string }> = [
     { value: "off", label: t("intervalManual") },
     { value: "6h", label: t("interval6h") },

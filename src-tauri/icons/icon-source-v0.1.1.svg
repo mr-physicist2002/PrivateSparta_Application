@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="copper" x1="180" y1="150" x2="840" y2="875" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#e0aa66"/>
+      <stop offset="0.52" stop-color="#c98c4a"/>
+      <stop offset="1" stop-color="#a96531"/>
+    </linearGradient>
+    <mask id="fast-s">
+      <rect width="1024" height="1024" fill="white"/>
+      <path fill="black" d="M690 291 811 272 779 390 744 356 589 445c-31 18-47 35-47 52 0 17 17 34 50 53l104 58c70 39 105 86 105 142 0 67-46 124-138 171L532 988l-52-82 223-128c31-18 47-36 47-54 0-17-16-34-48-52l-106-60c-70-39-105-86-105-141 0-66 46-123 137-171l37-20z"/>
+    </mask>
+  </defs>
+  <path
+    fill="url(#copper)"
+    mask="url(#fast-s)"
+    d="M512 55c95 91 222 151 369 170v229c0 248-137 419-369 515C280 873 143 702 143 454V225C290 206 417 146 512 55Z"
+  />
+</svg>

@@ -13,33 +13,42 @@ function Toggle(props: {
   onChange: (value: boolean) => void;
 }) {
   return (
-    <label
-      className={`flex items-center justify-between gap-4 py-2 ${
-        props.disabled ? "opacity-40" : "cursor-pointer"
+    <button
+      type="button"
+      role="switch"
+      aria-checked={props.checked}
+      aria-label={props.label}
+      disabled={props.disabled}
+      onClick={() => props.onChange(!props.checked)}
+      className={`group flex w-full items-center justify-between gap-4 rounded-input px-1 py-2 text-start transition-colors duration-[140ms] ${
+        props.disabled
+          ? "cursor-not-allowed opacity-40"
+          : "hover:bg-bg-elevated/60"
       }`}
     >
-      <div>
+      <span className="min-w-0">
         <div className="text-sm">{props.label}</div>
         {props.hint ? <div className="text-2xs text-text-muted">{props.hint}</div> : null}
-      </div>
-      <button
-        role="switch"
-        aria-checked={props.checked}
-        disabled={props.disabled}
-        onClick={() => props.onChange(!props.checked)}
-        className={`relative h-5 w-9 shrink-0 rounded-full transition-colors duration-[140ms] ${
-          props.checked ? "bg-accent" : "bg-border-strong"
+      </span>
+      <span
+        aria-hidden="true"
+        className={`relative h-[22px] w-10 shrink-0 rounded-full border transition-colors duration-[140ms] ${
+          props.checked
+            ? "border-accent bg-accent"
+            : "border-border-strong bg-bg-elevated"
         }`}
       >
         <span
-          className={`absolute top-0.5 size-4 rounded-full bg-bg-base transition-transform duration-[140ms] ${
+          className={`absolute start-0.5 top-0.5 size-4 rounded-full shadow-sm transition-transform duration-[140ms] ${
+            props.checked ? "bg-bg-base" : "bg-text-secondary"
+          } ${
             props.checked
               ? "ltr:translate-x-4 rtl:-translate-x-4"
-              : "ltr:translate-x-0.5 rtl:-translate-x-0.5"
+              : "translate-x-0"
           }`}
         />
-      </button>
-    </label>
+      </span>
+    </button>
   );
 }
 
@@ -50,9 +59,14 @@ function UpdateRow() {
   const [busy, setBusy] = useState(false);
   const [found, setFound] = useState<string | null>(null);
 
-  const check = async () => {
+  const act = async () => {
+    if (busy) return;
     setBusy(true);
     try {
+      if (found) {
+        await installUpdate();
+        return;
+      }
       const info = await checkForUpdate();
       if (info.available && info.version) {
         setFound(info.version);
@@ -79,9 +93,11 @@ function UpdateRow() {
         )}
       </div>
       <button
-        onClick={() => (found ? void installUpdate() : void check())}
+        type="button"
+        onClick={() => void act()}
         disabled={busy}
-        className="flex shrink-0 items-center gap-1.5 rounded-input border border-border-strong px-3 py-1 text-xs transition-colors duration-[140ms] hover:border-accent hover:text-accent disabled:opacity-40"
+        aria-busy={busy}
+        className="flex min-h-8 shrink-0 items-center gap-1.5 rounded-input border border-border-strong bg-bg-base px-3 py-1 text-xs transition-colors duration-[140ms] hover:border-accent hover:bg-accent-wash hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
       >
         {busy ? <RefreshCw size={12} className="animate-spin" /> : null}
         {busy ? t("checking") : found ? t("installUpdate") : t("checkForUpdates")}
@@ -92,7 +108,7 @@ function UpdateRow() {
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-card border border-border bg-bg-surface px-4 py-3">
+    <section className="mx-auto w-full max-w-4xl rounded-card border border-border bg-bg-surface px-4 py-3 shadow-[0_1px_0_rgba(255,255,255,0.025)_inset,0_12px_32px_rgba(0,0,0,0.08)]">
       <h3 className="mb-1 text-2xs font-medium uppercase tracking-wide text-text-muted">
         {title}
       </h3>
@@ -132,7 +148,7 @@ export function SettingsScreen() {
   };
 
   return (
-    <main className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 py-5">
+    <main className="scrollbar-stable flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 py-5">
       <Section title={t("sectionGeneral")}>
         <Toggle
           label={t("launchAtLogin")}
@@ -154,6 +170,7 @@ export function SettingsScreen() {
         <div className="flex items-center justify-between gap-4 py-2">
           <div className="text-sm">{t("language")}</div>
           <select
+            aria-label={t("language")}
             value={draft.language}
             onChange={(e) => apply({ language: e.target.value })}
             className="rounded-input border border-border bg-bg-base px-2 py-1 text-xs text-text-secondary outline-none"
@@ -176,6 +193,7 @@ export function SettingsScreen() {
             </div>
           </div>
           <input
+            aria-label={t("localPort")}
             value={port}
             onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))}
             onBlur={commitPort}
@@ -219,6 +237,7 @@ export function SettingsScreen() {
         <div className="flex items-center justify-between gap-4 py-2">
           <div className="text-sm">{t("coreLogLevel")}</div>
           <select
+            aria-label={t("coreLogLevel")}
             value={draft.logLevel}
             onChange={(e) => apply({ logLevel: e.target.value })}
             className="rounded-input border border-border bg-bg-base px-2 py-1 text-xs text-text-secondary outline-none"
