@@ -13,6 +13,5 @@ src-tauri/binaries/
 src-tauri/resources/xray/
 *.local
 # Local editor / tooling state
-.claude/
 .vscode/
 .idea/
