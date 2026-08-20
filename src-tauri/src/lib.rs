@@ -17,6 +17,7 @@ mod sysproxy;
 mod tray;
 mod updater;
 mod uri_export;
+mod xray_config;
 
 use std::sync::Mutex;
 

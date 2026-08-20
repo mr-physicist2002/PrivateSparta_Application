@@ -181,13 +181,13 @@ trojan://pw@other.net:8443#ok2
 
     #[test]
     fn all_failed_import_keeps_the_first_safe_reason() {
-        let text = "vless://2f9a4b7c-1d2e-4f5a-8b9c-0d1e2f3a4b5c@example.com:443?security=reality&pbk=key&type=xhttp\nnot-a-link";
+        let text = "vless://2f9a4b7c-1d2e-4f5a-8b9c-0d1e2f3a4b5c@example.com:443?security=reality&type=xhttp\nnot-a-link";
         let batch = parse_text(text);
         assert!(batch.nodes.is_empty());
         assert_eq!(batch.skipped, 2);
         assert_eq!(
             batch.first_error.as_deref(),
-            Some("xhttp transport isn't supported by the bundled tunnel core")
+            Some("REALITY link is missing pbk")
         );
         assert!(!batch.first_error.unwrap().contains("2f9a4b7c"));
     }

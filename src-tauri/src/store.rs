@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::AppError;
-use crate::model::{Node, ProxyMode, Subscription, WindowState};
+use crate::model::{deduplicate_nodes, Node, ProxyMode, Subscription, WindowState};
 
 pub const CURRENT_SCHEMA: u32 = 3;
 
@@ -129,7 +129,7 @@ impl ConfigStore {
     /// Load from disk. A missing file yields defaults; a corrupt file is set
     /// aside (renamed .bad) rather than deleted, and defaults are used.
     pub fn load(path: PathBuf) -> Self {
-        let config = match fs::read_to_string(&path) {
+        let mut config = match fs::read_to_string(&path) {
             Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
                 Ok(value) => match migrate(value) {
                     Ok(config) => config,
@@ -147,6 +147,13 @@ impl ConfigStore {
             },
             Err(_) => AppConfig::default(),
         };
+        let mut removed = deduplicate_nodes(&mut config.manual_nodes);
+        for subscription in &mut config.subscriptions {
+            removed += deduplicate_nodes(&mut subscription.nodes);
+        }
+        if removed > 0 {
+            tracing::warn!("removed {removed} duplicate server entries from the saved config");
+        }
         ConfigStore { path, config }
     }
 
@@ -233,6 +240,23 @@ fn migrate(mut value: serde_json::Value) -> Result<AppConfig, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Protocol, ProtocolParams, TlsConfig, Transport};
+
+    fn test_node() -> Node {
+        Node {
+            id: Uuid::new_v4(),
+            name: "test".into(),
+            protocol: Protocol::Vless,
+            server: "example.com".into(),
+            port: 443,
+            params: ProtocolParams::Vless {
+                uuid: Uuid::new_v4().to_string(),
+                flow: None,
+            },
+            transport: Transport::Tcp,
+            tls: TlsConfig::None,
+        }
+    }
 
     #[test]
     fn missing_file_yields_defaults() {
@@ -255,6 +279,35 @@ mod tests {
         let reloaded = ConfigStore::load(path);
         assert_eq!(reloaded.config.settings.local_port, 3131);
         assert_eq!(reloaded.config.favorites.len(), 1);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn load_repairs_duplicate_subscription_entries() {
+        let dir = std::env::temp_dir().join(format!("ps-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("config.json");
+        let first = test_node();
+        let shared_id = first.id;
+        let mut duplicate = first.clone();
+        duplicate.name = "duplicate label".into();
+        duplicate.id = shared_id;
+        let mut config = AppConfig::default();
+        config.subscriptions.push(Subscription {
+            id: Uuid::new_v4(),
+            name: "subscription".into(),
+            url: "https://example.com/sub".into(),
+            nodes: vec![first, duplicate],
+            user_info: None,
+            auto_update: crate::model::UpdateInterval::Off,
+            last_updated: None,
+            last_error: None,
+        });
+        fs::write(&path, serde_json::to_vec(&config).expect("serialize")).expect("write");
+
+        let store = ConfigStore::load(path);
+        assert_eq!(store.config.subscriptions[0].nodes.len(), 1);
+        assert_eq!(store.config.subscriptions[0].nodes[0].id, shared_id);
         let _ = fs::remove_dir_all(dir);
     }
 

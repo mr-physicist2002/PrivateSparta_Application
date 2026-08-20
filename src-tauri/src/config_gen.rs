@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use serde_json::{json, Map, Value};
 
 use crate::error::AppError;
@@ -31,7 +33,12 @@ pub struct GenInput<'a> {
 pub fn generate(input: &GenInput<'_>) -> Result<Value, AppError> {
     let mut outbounds = Vec::new();
     let mut endpoints = Vec::new();
+    let mut seen_tags = HashSet::new();
     for node in input.nodes {
+        if !seen_tags.insert(node.tag()) {
+            tracing::warn!("skipping duplicate outbound tag in generated config");
+            continue;
+        }
         match outbound_for_node(node) {
             Ok(OutboundValue::Outbound(v)) => outbounds.push(v),
             Ok(OutboundValue::Endpoint(v)) => endpoints.push(v),
@@ -595,6 +602,22 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_node_ids_do_not_create_duplicate_outbound_tags() {
+        let first = reality_node();
+        let mut duplicate = first.clone();
+        duplicate.name = "duplicate".into();
+        let nodes = vec![first.clone(), duplicate];
+
+        let cfg = gen(&nodes, &first.tag());
+        let obs = cfg["outbounds"].as_array().expect("array");
+        assert_eq!(obs.len(), 2, "one server outbound plus direct");
+        assert_eq!(
+            obs.iter().filter(|ob| ob["tag"] == first.tag()).count(),
+            1
+        );
+    }
+
+    #[test]
     fn hysteria2_gets_obfs_object() {
         let node = base_node(
             Protocol::Hysteria2,
@@ -674,7 +697,11 @@ mod tests {
     #[test]
     fn bad_nonselected_node_is_skipped_selected_errors() {
         let mut xhttp = reality_node();
-        xhttp.transport = Transport::Xhttp { path: "/".into(), host: None };
+        xhttp.transport = Transport::Xhttp {
+            path: "/".into(),
+            host: None,
+            mode: "auto".into(),
+        };
         xhttp.tls = TlsConfig::None;
         let good = base_node(
             Protocol::Trojan,

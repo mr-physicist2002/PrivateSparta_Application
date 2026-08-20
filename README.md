@@ -1,8 +1,9 @@
 # PrivateSparta Desktop
 
 A lightweight desktop client for the PrivateSparta VPN service. Tauri v2 (Rust)
-+ React, with [sing-box](https://github.com/SagerNet/sing-box) as a supervised
-sidecar process. No Electron, no Flutter, no telemetry.
++ React, with [sing-box](https://github.com/SagerNet/sing-box) as the default
+supervised sidecar and [Xray-core](https://github.com/XTLS/Xray-core) as an
+XHTTP-only fallback. No Electron, no Flutter, no telemetry.
 
 Written by **H. Talebi** — <https://github.com/mr-physicist2002>
 
@@ -27,7 +28,9 @@ Nothing runs on a background timer unless you switched it on.
 
 - **Protocols:** VLESS (incl. REALITY), VMess, Trojan, Shadowsocks (SIP002 +
   legacy), Hysteria2, TUIC v5, WireGuard.
-  Transports: tcp, ws, grpc, httpupgrade, h2. Security: none, tls, reality.
+  Transports: tcp, ws, grpc, httpupgrade, h2, xhttp. Security: none, tls,
+  reality. XHTTP uses Xray only when an XHTTP server is selected; other
+  connections remain on sing-box.
 - **Subscriptions:** base64 URI list, plain URI list, sing-box JSON, and
   Clash/Clash.Meta YAML. Reads `subscription-userinfo` for used/total traffic
   and expiry. Fetches direct when disconnected and **through the tunnel** when
@@ -47,13 +50,15 @@ Nothing runs on a background timer unless you switched it on.
 | Component | Version | SHA-256 |
 |---|---|---|
 | sing-box (windows-amd64) | 1.13.15 | `4DB8218DEA131668CCD5E0B32E773E916A37BE730E655B176E0D3A930276CBE7` |
+| Xray-core (windows-amd64 executable) | 26.3.27 | `15C2D007954AC53BA69B80EC91242786B3C0B71D52649165B4CA1D5CC96EF8F1` |
 | wintun | 0.14.1 | `E5DA8447DC2C320EDC0FC52FA01885C103DE8C118481F683643CACC3220DAFCE` |
 
-The core is spawned as a sidecar — never embedded, never handed anything but a
-freshly generated, `sing-box check`-validated config. Its clash API and all
-inbounds bind to `127.0.0.1` only, with a random 32-byte secret per launch that
-is never written to disk. CI re-downloads the core per platform and prints the
-hash it actually shipped.
+The selected core is spawned as a sidecar — never embedded, and never handed
+anything but a freshly generated configuration validated by that core. Xray is
+started only for XHTTP servers; all established sing-box paths are unchanged.
+The Clash API and all local inbounds bind to `127.0.0.1` by default, with a
+random 32-byte Clash secret per sing-box launch. CI re-downloads both cores per
+platform and verifies Xray against the SHA-256 in GitHub's release metadata.
 
 ## Measured performance
 
@@ -85,9 +90,9 @@ Two honest caveats:
   window plus overscan, so cost per frame is independent of node count, but no
   number here is measured — treat it as unverified.
 
-The installer figure includes the compressed sing-box core, wintun, fonts, and
-routing rule-sets. Excluding the core — which Section 1 of the brief excludes —
-the app's own share is roughly 3 MB.
+The measured installer figure predates the optional XHTTP sidecar. Bundling
+Xray increases installer size, but does not change the normal sing-box runtime
+path or its measured connection performance.
 
 WebView2 host processes add ~140 MB outside our process; that is the shared
 system WebView runtime, not the app's own footprint, and no WebView-based
@@ -120,11 +125,12 @@ npm run tauri dev
 npm run tauri build
 ```
 
-Before building from a clean checkout, place the sing-box binary at
-`src-tauri/binaries/sing-box-x86_64-pc-windows-msvc.exe`. It is intentionally
-not committed — verify its SHA-256 against the table above after downloading.
-The release workflow fetches it automatically. `wintun.dll` and the routing
-rule-sets **are** committed, so nothing else is needed.
+Before building from a clean checkout, place the sing-box and Xray binaries at
+`src-tauri/binaries/sing-box-x86_64-pc-windows-msvc.exe` and
+`src-tauri/binaries/xray-x86_64-pc-windows-msvc.exe`. Xray's `geoip.dat`,
+`geosite.dat`, and `LICENSE` belong in `src-tauri/resources/xray/`. These files
+are intentionally not committed. The release workflow downloads them from the
+official releases and verifies Xray's archive digest automatically.
 
 ### Tests
 
@@ -188,8 +194,8 @@ CI. Unsigned local builds are for development only.
   Rust and writes it straight to the clipboard.
 - Credential redaction (UUIDs, `pbk`, passwords, keys) is applied to every log
   path and error message, including the Logs screen.
-- The sing-box process is assigned to a Windows job object with kill-on-close,
-  so the core dies with the app — including on crash.
+- Every tunnel-core process is assigned to a Windows job object with
+  kill-on-close, so it dies with the app — including on crash.
 - The previous system-proxy state is written to disk *before* it is changed and
   restored on disconnect, on quit, and on the next launch after a crash.
 - Config is stored in the per-user app-data directory with atomic

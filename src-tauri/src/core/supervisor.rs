@@ -1,4 +1,4 @@
-//! Owns the sing-box lifecycle: spawn, health check, crash restarts (max 3,
+//! Owns the tunnel-core lifecycle: spawn, health check, crash restarts (max 3,
 //! exponential backoff), teardown, and the 1 Hz traffic pump while connected.
 
 use std::collections::VecDeque;
@@ -18,8 +18,9 @@ use uuid::Uuid;
 use crate::clash::{self, ClashEndpoint};
 use crate::config_gen::{self, GenInput};
 use crate::error::{redact, AppError};
-use crate::model::{ConnState, ConnectionEvent, Node, ProxyMode, TrafficEvent};
+use crate::model::{ConnState, ConnectionEvent, Node, ProxyMode, TrafficEvent, Transport};
 use crate::sysproxy;
+use crate::xray_config;
 
 #[cfg(windows)]
 use super::job_object::JobObject;
@@ -200,6 +201,12 @@ enum Health {
     Killed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CoreKind {
+    SingBox,
+    Xray,
+}
+
 async fn run_connection(ctx: RunCtx) {
     let RunCtx {
         app,
@@ -231,7 +238,13 @@ async fn run_connection(ctx: RunCtx) {
             use tauri::Manager as _;
             Arc::clone(&app.state::<crate::commands::AppState>().logs)
         };
-        let mut child = match spawn_core(&prep.config_path, &stderr_ring, logs) {
+        let mut child = match spawn_core_for(
+            prep.core,
+            &prep.config_path,
+            prep.xray_asset_dir.as_ref(),
+            &stderr_ring,
+            logs,
+        ) {
             Ok(child) => child,
             Err(err) => {
                 teardown_proxy(&app, proxy_set);
@@ -246,7 +259,7 @@ async fn run_connection(ctx: RunCtx) {
             }
         }
 
-        match health_check(&mut child, prep.endpoint.port, &mut kill_rx).await {
+        match health_check(&mut child, prep.health_port, &mut kill_rx).await {
             Health::Killed => {
                 let _ = child.kill().await;
                 finish_disconnect(&app, &inner, generation, node_id, proxy_set);
@@ -288,7 +301,7 @@ async fn run_connection(ctx: RunCtx) {
             let mut guard = lock(&inner);
             if guard.generation == generation {
                 guard.state = ConnState::Connected;
-                guard.run_info = Some(prep.endpoint.clone());
+                guard.run_info = prep.endpoint.clone();
                 true
             } else {
                 false
@@ -300,12 +313,19 @@ async fn run_connection(ctx: RunCtx) {
         }
         emit(&app, ConnectionEvent::new(ConnState::Connected, Some(node_id)));
 
-        let stats_task = tauri::async_runtime::spawn(stats_pump(
-            app.clone(),
-            prep.endpoint.clone(),
-            Arc::clone(&totals),
-            session_start,
-        ));
+        let stats_task = match prep.endpoint.clone() {
+            Some(endpoint) => tauri::async_runtime::spawn(stats_pump(
+                app.clone(),
+                endpoint,
+                Arc::clone(&totals),
+                session_start,
+            )),
+            None => tauri::async_runtime::spawn(timer_pump(
+                app.clone(),
+                Arc::clone(&totals),
+                session_start,
+            )),
+        };
 
         tokio::select! {
             _ = &mut kill_rx => {
@@ -405,17 +425,71 @@ async fn stats_pump(
     }
 }
 
+/// Xray does not expose sing-box's Clash traffic stream. Keep the connection
+/// timer responsive without inventing byte counts.
+async fn timer_pump(
+    app: AppHandle,
+    totals: Arc<TrafficTotals>,
+    session_start: tokio::time::Instant,
+) {
+    let mut ticker = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        ticker.tick().await;
+        let event = TrafficEvent {
+            up_bps: 0,
+            down_bps: 0,
+            up_total: totals.up.load(Ordering::Relaxed),
+            down_total: totals.down.load(Ordering::Relaxed),
+            seconds: session_start.elapsed().as_secs(),
+        };
+        if let Err(err) = app.emit("traffic", event) {
+            tracing::warn!("couldn't emit traffic: {err}");
+        }
+    }
+}
+
 fn backoff(attempt: u32) -> Duration {
     Duration::from_millis(500u64.saturating_mul(1 << attempt.min(4)))
 }
 
 struct Prepared {
+    core: CoreKind,
     config_path: PathBuf,
-    endpoint: ClashEndpoint,
+    health_port: u16,
+    endpoint: Option<ClashEndpoint>,
+    xray_asset_dir: Option<PathBuf>,
 }
 
 async fn prepare(app: &AppHandle, request: &ConnectRequest) -> Result<Prepared, AppError> {
     let data_dir = data_dir(app)?;
+    if matches!(request.selected.transport, Transport::Xhttp { .. }) {
+        let config = xray_config::generate(&xray_config::GenInput {
+            node: &request.selected,
+            local_port: request.local_port,
+            allow_lan: request.allow_lan,
+            log_level: &request.log_level,
+            mode: request.mode,
+            rules_enabled: request.rules.is_some(),
+            ad_block: request.ad_block,
+        })?;
+        let config_path = data_dir.join("xray-run-config.json");
+        let asset_dir = xray_asset_dir(app)?;
+        write_and_check_for(
+            CoreKind::Xray,
+            &config,
+            &config_path,
+            Some(&asset_dir),
+        )
+        .await?;
+        return Ok(Prepared {
+            core: CoreKind::Xray,
+            config_path,
+            health_port: request.local_port,
+            endpoint: None,
+            xray_asset_dir: Some(asset_dir),
+        });
+    }
+
     let clash_port = pick_free_port()?;
     let secret = random_secret()?;
     let selected_tag = request.selected.tag();
@@ -433,13 +507,16 @@ async fn prepare(app: &AppHandle, request: &ConnectRequest) -> Result<Prepared, 
         full_dns: true,
     })?;
     let config_path = data_dir.join("run-config.json");
-    write_and_check(&config, &config_path).await?;
+    write_and_check_for(CoreKind::SingBox, &config, &config_path, None).await?;
     Ok(Prepared {
+        core: CoreKind::SingBox,
         config_path,
-        endpoint: ClashEndpoint {
+        health_port: clash_port,
+        endpoint: Some(ClashEndpoint {
             port: clash_port,
             secret,
-        },
+        }),
+        xray_asset_dir: None,
     })
 }
 
@@ -448,11 +525,30 @@ pub async fn write_and_check(
     config: &serde_json::Value,
     path: &PathBuf,
 ) -> Result<(), AppError> {
+    write_and_check_for(CoreKind::SingBox, config, path, None).await
+}
+
+async fn write_and_check_for(
+    core: CoreKind,
+    config: &serde_json::Value,
+    path: &PathBuf,
+    xray_asset_dir: Option<&PathBuf>,
+) -> Result<(), AppError> {
     let json = serde_json::to_vec_pretty(config).map_err(|e| AppError::Config(e.to_string()))?;
     std::fs::write(path, json).map_err(|e| AppError::Config(e.to_string()))?;
-    let bin = sidecar_path()?;
+    let bin = core_path(core)?;
     let mut cmd = Command::new(&bin);
-    cmd.arg("check").arg("-c").arg(path);
+    match core {
+        CoreKind::SingBox => {
+            cmd.arg("check").arg("-c").arg(path);
+        }
+        CoreKind::Xray => {
+            cmd.arg("run").arg("-test").arg("-config").arg(path);
+            if let Some(asset_dir) = xray_asset_dir {
+                cmd.env("XRAY_LOCATION_ASSET", asset_dir);
+            }
+        }
+    }
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
     let output = cmd
@@ -461,7 +557,13 @@ pub async fn write_and_check(
         .map_err(|e| AppError::Core(format!("Couldn't run the tunnel core: {e}")))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let line = stderr.lines().last().unwrap_or("unknown error");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let detail = if stderr.trim().is_empty() { &stdout } else { &stderr };
+        let line = detail
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("unknown error");
         return Err(AppError::Config(format!(
             "The core rejected this server's config: {}",
             redact(line)
@@ -475,12 +577,31 @@ pub fn spawn_core(
     stderr_ring: &Arc<Mutex<VecDeque<String>>>,
     logs: Arc<crate::logs::LogBuffer>,
 ) -> Result<Child, AppError> {
-    let bin = sidecar_path()?;
+    spawn_core_for(CoreKind::SingBox, config_path, None, stderr_ring, logs)
+}
+
+fn spawn_core_for(
+    core: CoreKind,
+    config_path: &PathBuf,
+    xray_asset_dir: Option<&PathBuf>,
+    stderr_ring: &Arc<Mutex<VecDeque<String>>>,
+    logs: Arc<crate::logs::LogBuffer>,
+) -> Result<Child, AppError> {
+    let bin = core_path(core)?;
     let mut cmd = Command::new(&bin);
-    cmd.arg("run")
-        .arg("-c")
-        .arg(config_path)
-        .stdout(std::process::Stdio::piped())
+    cmd.arg("run");
+    match core {
+        CoreKind::SingBox => {
+            cmd.arg("-c").arg(config_path);
+        }
+        CoreKind::Xray => {
+            cmd.arg("-config").arg(config_path);
+            if let Some(asset_dir) = xray_asset_dir {
+                cmd.env("XRAY_LOCATION_ASSET", asset_dir);
+            }
+        }
+    }
+    cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
     #[cfg(windows)]
@@ -491,12 +612,17 @@ pub fn spawn_core(
 
     if let Some(stdout) = child.stdout.take() {
         let logs = Arc::clone(&logs);
+        let ring = Arc::clone(stderr_ring);
         tauri::async_runtime::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let clean = redact(&line);
                 tracing::info!(target: "core", "{clean}");
-                logs.push(clean);
+                logs.push(clean.clone());
+                let upper = clean.to_ascii_uppercase();
+                if upper.contains("ERROR") || upper.contains("FATAL") || upper.contains("FAILED") {
+                    remember_core_line(&ring, clean);
+                }
             }
         });
     }
@@ -508,11 +634,7 @@ pub fn spawn_core(
                 let clean = redact(&line);
                 tracing::warn!(target: "core", "{clean}");
                 logs.push(clean.clone());
-                let mut ring = ring.lock().unwrap_or_else(|p| p.into_inner());
-                if ring.len() >= 12 {
-                    ring.pop_front();
-                }
-                ring.push_back(clean);
+                remember_core_line(&ring, clean);
             }
         });
     }
@@ -566,10 +688,10 @@ pub async fn wait_for_port(child: &mut Child, clash_port: u16) -> bool {
 
 fn last_core_error(ring: &Arc<Mutex<VecDeque<String>>>) -> String {
     let ring = ring.lock().unwrap_or_else(|p| p.into_inner());
-    match ring
-        .iter()
-        .rev()
-        .find(|l| l.contains("ERROR") || l.contains("FATAL"))
+    match ring.iter().rev().find(|line| {
+        let upper = line.to_ascii_uppercase();
+        upper.contains("ERROR") || upper.contains("FATAL")
+    })
     {
         Some(line) => format!(" ({})", line.trim()),
         None => String::new(),
@@ -642,22 +764,45 @@ pub fn data_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
     Ok(dir)
 }
 
-/// The bundled sidecar sits next to our executable (Tauri strips the target
+/// Bundled sidecars sit next to our executable (Tauri strips the target
 /// triple suffix at bundle/dev time).
-pub fn sidecar_path() -> Result<PathBuf, AppError> {
+fn core_path(core: CoreKind) -> Result<PathBuf, AppError> {
     let exe = std::env::current_exe()
         .map_err(|e| AppError::Core(format!("couldn't locate the app: {e}")))?;
     let dir = exe
         .parent()
         .ok_or_else(|| AppError::Core("couldn't locate the app folder".into()))?;
-    let name = if cfg!(windows) { "sing-box.exe" } else { "sing-box" };
+    let name = match (core, cfg!(windows)) {
+        (CoreKind::SingBox, true) => "sing-box.exe",
+        (CoreKind::SingBox, false) => "sing-box",
+        (CoreKind::Xray, true) => "xray.exe",
+        (CoreKind::Xray, false) => "xray",
+    };
     let path = dir.join(name);
     if !path.exists() {
-        return Err(AppError::Core(
-            "The tunnel core is missing. Reinstall PrivateSparta.".into(),
-        ));
+        let label = if core == CoreKind::Xray {
+            "The XHTTP tunnel component is missing. Reinstall PrivateSparta."
+        } else {
+            "The tunnel core is missing. Reinstall PrivateSparta."
+        };
+        return Err(AppError::Core(label.into()));
     }
     Ok(path)
+}
+
+fn remember_core_line(ring: &Mutex<VecDeque<String>>, line: String) {
+    let mut ring = ring.lock().unwrap_or_else(|p| p.into_inner());
+    if ring.len() >= 12 {
+        ring.pop_front();
+    }
+    ring.push_back(line);
+}
+
+fn xray_asset_dir(app: &AppHandle) -> Result<PathBuf, AppError> {
+    app.path()
+        .resource_dir()
+        .map(|path| path.join("xray"))
+        .map_err(|e| AppError::Core(format!("couldn't locate XHTTP resources: {e}")))
 }
 
 pub fn pick_free_port() -> Result<u16, AppError> {

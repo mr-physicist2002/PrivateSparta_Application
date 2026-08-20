@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::commands::AppState;
 use crate::error::AppError;
-use crate::model::{ConnState, Node, SubUserInfo};
+use crate::model::{deduplicate_nodes, ConnState, Node, SubUserInfo};
 use crate::parser::subscription::{parse_payload, parse_userinfo};
 
 const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -105,8 +105,14 @@ pub async fn update_subscription(app: &AppHandle, sub_id: Uuid) -> Result<usize,
         .ok_or_else(|| AppError::Config("That subscription no longer exists.".into()))?;
     match outcome {
         Ok(mut result) => {
+            let duplicate_count = deduplicate_nodes(&mut result.nodes);
             if result.skipped > 0 {
                 tracing::info!("subscription update skipped {} unparseable entries", result.skipped);
+            }
+            if duplicate_count > 0 {
+                tracing::info!(
+                    "subscription update removed {duplicate_count} duplicate entries"
+                );
             }
             for new_node in result.nodes.iter_mut() {
                 if let Some(old) = sub.nodes.iter().find(|o| o.same_endpoint(new_node)) {

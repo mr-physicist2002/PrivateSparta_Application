@@ -8,7 +8,7 @@ use windows_sys::Win32::System::JobObjects::{
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 
-/// A Windows job object with kill-on-close. Every sing-box process is assigned
+/// A Windows job object with kill-on-close. Every tunnel-core process is assigned
 /// to it, so the OS terminates the core when our process dies for ANY reason —
 /// crash included. This is the no-orphaned-core guarantee.
 pub struct JobObject(HANDLE);

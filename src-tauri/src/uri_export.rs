@@ -35,9 +35,10 @@ fn push_transport(query: &mut Vec<(String, String)>, transport: &Transport) {
                 add("host", host);
             }
         }
-        Transport::Xhttp { path, host } => {
+        Transport::Xhttp { path, host, mode } => {
             add("type", "xhttp");
             add("path", path);
+            add("mode", mode);
             if let Some(host) = host {
                 add("host", host);
             }
@@ -141,7 +142,7 @@ pub fn export_uri(node: &Node) -> String {
                 Transport::HttpUpgrade { path, host } => {
                     ("httpupgrade", path.clone(), host.clone())
                 }
-                Transport::Xhttp { path, host } => ("xhttp", path.clone(), host.clone()),
+                Transport::Xhttp { path, host, .. } => ("xhttp", path.clone(), host.clone()),
                 Transport::H2 { path, host } => ("h2", path.clone(), host.clone()),
             };
             let (tls, sni) = match &node.tls {

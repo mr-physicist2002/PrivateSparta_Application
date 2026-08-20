@@ -19,18 +19,26 @@ jobs:
             target: x86_64-pc-windows-msvc
             core: windows-amd64
             core_bin: sing-box.exe
+            xray_archive: Xray-windows-64.zip
+            xray_bin: xray.exe
           - platform: macos-latest
             target: aarch64-apple-darwin
             core: darwin-arm64
             core_bin: sing-box
+            xray_archive: Xray-macos-arm64-v8a.zip
+            xray_bin: xray
           - platform: macos-latest
             target: x86_64-apple-darwin
             core: darwin-amd64
             core_bin: sing-box
+            xray_archive: Xray-macos-64.zip
+            xray_bin: xray
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             core: linux-amd64
             core_bin: sing-box
+            xray_archive: Xray-linux-64.zip
+            xray_bin: xray
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -78,6 +86,32 @@ jobs:
           chmod +x src-tauri/binaries/* || true
           # Record the hash that actually shipped in this build.
           shasum -a 256 src-tauri/binaries/* || sha256sum src-tauri/binaries/*
+
+      - name: Fetch and verify Xray XHTTP core
+        shell: bash
+        env:
+          XRAY_VERSION: ${{ vars.XRAY_VERSION || '26.3.27' }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          archive="${{ matrix.xray_archive }}"
+          release_url="https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}"
+          api_url="https://api.github.com/repos/XTLS/Xray-core/releases/tags/v${XRAY_VERSION}"
+          mkdir -p src-tauri/binaries src-tauri/resources/xray xray-package
+          curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -o release.json "$api_url"
+          expected="$(jq -r --arg name "$archive" '.assets[] | select(.name == $name) | .digest' release.json)"
+          test "${expected#sha256:}" != "$expected"
+          curl -fsSL -o xray.zip "$release_url/$archive"
+          actual="$(shasum -a 256 xray.zip | awk '{print $1}')"
+          test "$actual" = "${expected#sha256:}"
+          unzip -q xray.zip -d xray-package
+          suffix="$([ "${{ matrix.platform }}" = "windows-latest" ] && echo .exe || true)"
+          cp "xray-package/${{ matrix.xray_bin }}" \
+            "src-tauri/binaries/xray-${{ matrix.target }}${suffix}"
+          cp xray-package/geoip.dat xray-package/geosite.dat xray-package/LICENSE \
+            src-tauri/resources/xray/
+          chmod +x src-tauri/binaries/xray-* || true
+          shasum -a 256 src-tauri/binaries/xray-* src-tauri/resources/xray/*
 
       - name: Fetch routing rule-sets
         shell: bash

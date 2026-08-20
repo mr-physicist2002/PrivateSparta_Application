@@ -30,7 +30,7 @@ pub fn parse(uri: &str) -> Result<Node, ParseError> {
     let tls = build_tls(&query, &server, false)?;
     if !reality_transport_ok(&tls, &transport) {
         return Err(ParseError::new(
-            "REALITY only works with tcp, grpc, or h2 transports",
+            "REALITY only works with tcp, grpc, h2, or xhttp transports",
         ));
     }
 
@@ -172,15 +172,20 @@ mod tests {
     }
 
     #[test]
-    fn explains_that_xhttp_needs_a_different_core() {
+    fn parses_reality_xhttp_with_mode() {
         let uri = format!(
             "vless://{UUID}@example.com:443?security=reality&pbk=key&type=xhttp&path=%2F&mode=auto"
         );
-        let err = parse(&uri).expect_err("xhttp must not be accepted by sing-box 1.13");
+        let node = parse(&uri).expect("xhttp should parse for the Xray fallback");
         assert_eq!(
-            err.reason,
-            "xhttp transport isn't supported by the bundled tunnel core"
+            node.transport,
+            Transport::Xhttp {
+                path: "/".into(),
+                host: None,
+                mode: "auto".into(),
+            }
         );
+        assert!(matches!(node.tls, TlsConfig::Reality { .. }));
     }
 
     #[test]
