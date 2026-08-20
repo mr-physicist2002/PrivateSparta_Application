@@ -1,5 +1,6 @@
 node_modules/
 dist/
+release-artifacts/
 src-tauri/target/
 src-tauri/gen/schemas/
 /PrivateSparta-desktop-*/
@@ -9,6 +10,7 @@ src-tauri/gen/schemas/
 updater-key-password.txt
 # Bundled core: downloaded, not versioned. Version + SHA-256 pinned in README.
 src-tauri/binaries/
+src-tauri/resources/xray/
 *.local
 # Local editor / tooling state
 .claude/

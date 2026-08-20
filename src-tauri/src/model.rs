@@ -97,11 +97,17 @@ pub enum Transport {
     Xhttp {
         path: String,
         host: Option<String>,
+        #[serde(default = "default_xhttp_mode")]
+        mode: String,
     },
     H2 {
         path: String,
         host: Option<String>,
     },
+}
+
+fn default_xhttp_mode() -> String {
+    "auto".into()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,12 +148,28 @@ impl Node {
             && self.port == other.port
             && self.params == other.params
             && self.transport == other.transport
+            && self.tls == other.tls
     }
 
     /// The outbound tag this node gets in generated configs.
     pub fn tag(&self) -> String {
         self.id.to_string()
     }
+}
+
+/// Remove repeated server entries while preserving the first occurrence and
+/// its stable id. Subscription providers occasionally publish the same entry
+/// more than once; keeping both can produce duplicate outbound tags.
+pub fn deduplicate_nodes(nodes: &mut Vec<Node>) -> usize {
+    let original_len = nodes.len();
+    let mut unique = Vec::with_capacity(original_len);
+    for node in nodes.drain(..) {
+        if !unique.iter().any(|existing: &Node| existing.same_endpoint(&node)) {
+            unique.push(node);
+        }
+    }
+    *nodes = unique;
+    original_len - nodes.len()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -391,5 +413,33 @@ mod tests {
             serde_json::from_str::<UpdateInterval>("\"off\"").expect("de"),
             UpdateInterval::Off
         );
+    }
+
+    #[test]
+    fn deduplicates_repeated_endpoints_preserving_first_id() {
+        let first_id = Uuid::new_v4();
+        let mut nodes = vec![
+            Node {
+                id: first_id,
+                name: "first".into(),
+                protocol: Protocol::Vless,
+                server: "example.com".into(),
+                port: 443,
+                params: ProtocolParams::Vless {
+                    uuid: Uuid::new_v4().to_string(),
+                    flow: None,
+                },
+                transport: Transport::Tcp,
+                tls: TlsConfig::None,
+            },
+        ];
+        let mut duplicate = nodes[0].clone();
+        duplicate.id = Uuid::new_v4();
+        duplicate.name = "duplicate label".into();
+        nodes.push(duplicate);
+
+        assert_eq!(deduplicate_nodes(&mut nodes), 1);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].id, first_id);
     }
 }

@@ -31,11 +31,12 @@
     "active": true,
     "targets": ["nsis"],
     "createUpdaterArtifacts": true,
-    "externalBin": ["binaries/sing-box"],
+    "externalBin": ["binaries/sing-box", "binaries/xray"],
     "resources": {
       "icons/icon.ico": "./PrivateSparta.ico",
       "resources/wintun.dll": "./wintun.dll",
-      "resources/rulesets/": "rulesets/"
+      "resources/rulesets/": "rulesets/",
+      "resources/xray/": "xray/"
     },
     "icon": [
       "icons/32x32.png",

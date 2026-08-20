@@ -157,6 +157,11 @@ fn singbox_outbound_to_node(ob: &Json) -> Option<Node> {
                     service_name: ts("service_name").unwrap_or_default(),
                 },
                 "httpupgrade" => Transport::HttpUpgrade { path, host: ts("host") },
+                "xhttp" | "splithttp" => Transport::Xhttp {
+                    path,
+                    host: ts("host"),
+                    mode: ts("mode").unwrap_or_else(|| "auto".into()),
+                },
                 "http" => Transport::H2 {
                     path,
                     host: tr
